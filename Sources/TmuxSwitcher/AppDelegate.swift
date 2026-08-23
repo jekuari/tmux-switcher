@@ -18,7 +18,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     init(demoSessionCount: Int?) {
         self.demoSessionCount = demoSessionCount
-        self.config = Config.load()
+        // A broken config at startup falls back to defaults rather than
+        // refusing to launch: a background agent that silently fails to appear
+        // is far harder to diagnose than one running on defaults. The reason
+        // is logged from `beginNormalOperation`, once logging is meaningful.
+        self.config = (try? Config.load()) ?? .defaults
         super.init()
     }
 
@@ -69,7 +73,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startNotifyServer()
         startConfigWatcher()
 
+        reportConfigProblems()
+
         Log.app.info("tmux-switcher started; watching \(self.config.ghosttyBundleID, privacy: .public)")
+    }
+
+    /// Surfaces the two ways a user can believe they have configured this app
+    /// while it is actually running on defaults.
+    private func reportConfigProblems() {
+        do {
+            _ = try Config.load()
+        } catch {
+            Log.app.error(
+                "config at \(Config.configURL.path, privacy: .public) is invalid, running on defaults: \(String(describing: error), privacy: .public)"
+            )
+        }
+
+        // config.env was the format before config.json. Nothing reads it now,
+        // so a leftover one is settings the user thinks are in effect and
+        // aren't -- worth a log line rather than silent indifference.
+        let fileManager = FileManager.default
+        if !fileManager.fileExists(atPath: Config.configURL.path),
+           fileManager.fileExists(atPath: Config.legacyConfigURL.path) {
+            Log.app.error(
+                "found a legacy \(Config.legacyConfigURL.lastPathComponent, privacy: .public) but no \(Config.configURL.lastPathComponent, privacy: .public); it is ignored -- port your settings to JSON (see the README)"
+            )
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -146,7 +175,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startConfigWatcher() {
         configWatcher = ConfigWatcher(url: Config.configURL) { [weak self] in
             guard let self else { return }
-            let updated = Config.load()
+            let updated: Config
+            do {
+                updated = try Config.load()
+            } catch {
+                // Hold on to the config already in effect. A JSON document is
+                // parsed whole, so an editor that saves mid-keystroke produces
+                // a file that is briefly invalid -- snapping every setting back
+                // to its default on the way past would be worse than waiting
+                // for the next save.
+                Log.app.error(
+                    "config reload failed, keeping the previous one: \(String(describing: error), privacy: .public)"
+                )
+                return
+            }
             guard updated != self.config else { return }
             self.config = updated
             self.state.configChanged(updated)

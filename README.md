@@ -142,22 +142,67 @@ already have set for the same event.)
 
 ## Configuration
 
-tmux-switcher reads `~/.config/tmux-switcher/config.env` and hot-reloads it
-on save — no restart needed. Recognized keys:
+tmux-switcher reads `~/.config/tmux-switcher/config.json` and hot-reloads it on
+save — no restart needed. The file is optional; every key is optional too, so it
+only ever needs to mention the knobs you actually want to change.
 
-| Key | Meaning |
-| --- | --- |
-| `DWELL_MS=150` | How long Meh must be held before the HUD appears. Raise it if quick Meh chords flash the HUD; `0` shows it instantly. |
-| `IDLE_HIDE_MS=2000` | Fallback for a *missed* Meh release: hides this long after the last session change, but only if the hardware says Meh is no longer held. Deliberately holding Meh to read the list keeps it up. |
-| `MAX_DISPLAY_MS=0` | Absolute cap on how long the HUD may stay up, enforced unconditionally. `0` (the default) disables it, so holding Meh keeps the HUD up indefinitely. |
-| `MODIFIER_POLL_MS=100` | Poll interval for detecting whether Meh is still held. |
-| `MAX_RADIUS=4` | Maximum number of sessions shown on either side of the current one. |
-| `TMUX_BIN` | Path to the `tmux` binary to invoke, if not the one on `PATH`. |
-| `GHOSTTY_BUNDLE_ID` | Bundle identifier used to detect that Ghostty is the focused app. |
-| `SHOW_DIRECTION_HINTS` | Whether to show up/down direction indicators in the HUD. |
-| `ANIMATE` | Whether HUD show/hide transitions are animated. |
-| `SCROLL_ANIMATION_MS=200` | Duration of the one-row slide when the session changes. `0` makes it instant. |
-| `USE_LIQUID_GLASS=1` | Use macOS 26 Liquid Glass for the pills. Set `0` for plain translucent capsules. |
+```jsonc
+{
+  // Raise this if quick Meh chords flash the HUD.
+  "dwellMs": 250,
+  "maxRadius": 6,
+  "tmuxBin": "/opt/homebrew/bin/tmux"
+}
+```
+
+Parsing is JSON5-tolerant: `//` and `/* */` comments, trailing commas and
+unquoted keys are all accepted. Plain JSON has no comment syntax, which would
+have made it a strictly worse format than the `KEY=value` file it replaced for
+something whose whole purpose is to be hand-edited and annotated.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `dwellMs` | int | `150` | How long Meh must be held before the HUD appears. Raise it if quick Meh chords flash the HUD; `0` shows it instantly. |
+| `idleHideMs` | int | `2000` | Fallback for a *missed* Meh release: hides this long after the last session change, but only if the hardware says Meh is no longer held. Deliberately holding Meh to read the list keeps it up. |
+| `maxDisplayMs` | int | `0` | Absolute cap on how long the HUD may stay up, enforced unconditionally. `0` disables it, so holding Meh keeps the HUD up indefinitely. |
+| `modifierPollMs` | int | `100` | Poll interval for detecting whether Meh is still held. |
+| `maxRadius` | int | `4` | Maximum number of sessions shown on either side of the current one. |
+| `tmuxBin` | string | `/opt/homebrew/bin/tmux` | Path to the `tmux` binary to invoke. |
+| `ghosttyBundleID` | string | `com.mitchellh.ghostty` | Bundle identifier used to detect that Ghostty is the focused app. |
+| `showDirectionHints` | bool | `true` | Whether to show up/down direction indicators in the HUD. |
+| `animate` | bool | `true` | Whether HUD show/hide transitions are animated. |
+| `scrollAnimationMs` | int | `200` | Duration of the one-row slide when the session changes. `0` makes it instant. |
+| `useLiquidGlass` | bool | `true` | Use macOS 26 Liquid Glass for the pills. `false` gives plain translucent capsules. |
+
+Durations clamp at `0` and `maxRadius` clamps at `1`, since a zero radius would
+render a HUD with no rows in it. Unknown keys are ignored, so a config written
+for a newer build will not break an older binary.
+
+### On invalid config
+
+A JSON document is parsed as a whole, so a single typo invalidates the entire
+file — unlike the old `KEY=value` format, where a bad line could just be
+skipped. Silently falling back to defaults would therefore mean silently
+discarding *every* setting over one misplaced comma, so instead:
+
+- **At startup**, a broken file logs an error naming the offending key and the
+  app runs on defaults. It never refuses to launch — a background agent that
+  silently fails to appear is much harder to diagnose than one running on
+  defaults.
+- **On hot-reload**, a broken file is ignored and the config already in effect
+  is kept. Editors save mid-keystroke often enough that a briefly invalid file
+  is normal; reverting every setting on the way past would be worse than
+  waiting for the next save.
+
+Either way the reason lands in `make logs`. `TmuxSwitcher --probe-tmux` also
+reports it, since "the HUD shows nothing" and "my config has a typo" are the
+same symptom from the outside.
+
+> **Upgrading?** The format changed from `config.env` (`KEY=value`, uppercase
+> keys) to `config.json` (camelCase keys). Nothing reads `config.env` any more.
+> If one is still sitting there with no `config.json` beside it, the app logs a
+> warning at startup rather than appearing to ignore settings you believe are in
+> effect. Port it by hand — `DWELL_MS=250` becomes `"dwellMs": 250`.
 
 ## Troubleshooting
 
@@ -178,7 +223,7 @@ without `make sign`/`make install` (or `make cert` was never run) — redo
 
 **tmux-switcher isn't reflecting session changes.**
 Confirm the optional tmux hooks are installed (`make hooks` reprints them),
-and that `TMUX_BIN` in your config points at the same `tmux` your shell
+and that `tmuxBin` in your config points at the same `tmux` your shell
 uses. Remember: the app only ever calls `tmux list-sessions` — it never
 creates, kills, or renames sessions, so it cannot be the cause of any
 session-state change itself.

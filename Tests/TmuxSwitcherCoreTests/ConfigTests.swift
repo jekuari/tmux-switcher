@@ -17,244 +17,237 @@ struct ConfigTests {
         #expect(config.ghosttyBundleID == "com.mitchellh.ghostty")
         #expect(config.showDirectionHints == true)
         #expect(config.animate == true)
+        #expect(config.scrollAnimationMs == 200)
+        #expect(config.useLiquidGlass == true)
     }
 
-    @Test("parse empty string returns defaults")
-    func testParseEmpty() {
-        let config = Config.parse("")
+    // MARK: - Empty and minimal documents
 
-        #expect(config.dwellMs == 150)
-        #expect(config.idleHideMs == 2000)
-        #expect(config.maxDisplayMs == 0)   // hard cap disabled by default
-        #expect(config.modifierPollMs == 100)
-        #expect(config.maxRadius == 4)
-        #expect(config.tmuxBin == "/opt/homebrew/bin/tmux")
-        #expect(config.ghosttyBundleID == "com.mitchellh.ghostty")
-        #expect(config.showDirectionHints == true)
-        #expect(config.animate == true)
+    @Test("empty string returns defaults")
+    func testParseEmpty() throws {
+        // Not valid JSON, but the most natural way to say "no overrides", so
+        // it is answered before the decoder ever sees it.
+        #expect(try Config.parse("") == Config.defaults)
     }
+
+    @Test("whitespace-only returns defaults")
+    func testParseWhitespaceOnly() throws {
+        #expect(try Config.parse("\n\n   \t\n") == Config.defaults)
+    }
+
+    @Test("empty object returns defaults")
+    func testParseEmptyObject() throws {
+        #expect(try Config.parse("{}") == Config.defaults)
+    }
+
+    // MARK: - Values
 
     @Test("parse int values")
-    func testParseInts() {
-        let text = """
-        DWELL_MS=300
-        IDLE_HIDE_MS=5000
-        MAX_DISPLAY_MS=20000
-        MODIFIER_POLL_MS=50
-        MAX_RADIUS=8
-        """
-
-        let config = Config.parse(text)
+    func testParseInts() throws {
+        let config = try Config.parse("""
+        {
+          "dwellMs": 300,
+          "idleHideMs": 5000,
+          "maxDisplayMs": 20000,
+          "modifierPollMs": 50,
+          "maxRadius": 8,
+          "scrollAnimationMs": 0
+        }
+        """)
 
         #expect(config.dwellMs == 300)
         #expect(config.idleHideMs == 5000)
         #expect(config.maxDisplayMs == 20000)
         #expect(config.modifierPollMs == 50)
         #expect(config.maxRadius == 8)
+        #expect(config.scrollAnimationMs == 0)
     }
 
     @Test("parse string values")
-    func testParseStrings() {
-        let text = """
-        TMUX_BIN=/usr/local/bin/tmux
-        GHOSTTY_BUNDLE_ID=com.example.app
-        """
-
-        let config = Config.parse(text)
+    func testParseStrings() throws {
+        let config = try Config.parse("""
+        {
+          "tmuxBin": "/usr/local/bin/tmux",
+          "ghosttyBundleID": "com.example.app"
+        }
+        """)
 
         #expect(config.tmuxBin == "/usr/local/bin/tmux")
         #expect(config.ghosttyBundleID == "com.example.app")
     }
 
-    @Test("parse boolean values (true)")
-    func testParseBoolTrue() {
-        let text = """
-        SHOW_DIRECTION_HINTS=true
-        ANIMATE=1
-        """
+    @Test("parse boolean values")
+    func testParseBools() throws {
+        let allTrue = try Config.parse("""
+        { "showDirectionHints": true, "animate": true, "useLiquidGlass": true }
+        """)
+        #expect(allTrue.showDirectionHints == true)
+        #expect(allTrue.animate == true)
+        #expect(allTrue.useLiquidGlass == true)
 
-        let config = Config.parse(text)
-
-        #expect(config.showDirectionHints == true)
-        #expect(config.animate == true)
+        let allFalse = try Config.parse("""
+        { "showDirectionHints": false, "animate": false, "useLiquidGlass": false }
+        """)
+        #expect(allFalse.showDirectionHints == false)
+        #expect(allFalse.animate == false)
+        #expect(allFalse.useLiquidGlass == false)
     }
 
-    @Test("parse boolean values (false)")
-    func testParseBoolFalse() {
-        let text = """
-        SHOW_DIRECTION_HINTS=false
-        ANIMATE=0
-        """
+    @Test("a partial document overrides only the keys it names")
+    func testPartialOverride() throws {
+        let config = try Config.parse(#"{ "dwellMs": 42 }"#)
 
-        let config = Config.parse(text)
-
-        #expect(config.showDirectionHints == false)
-        #expect(config.animate == false)
+        #expect(config.dwellMs == 42)
+        // Everything else must be untouched -- this is the property that lets a
+        // config file mention only the knobs the user actually cares about.
+        #expect(config.idleHideMs == Config.defaults.idleHideMs)
+        #expect(config.maxRadius == Config.defaults.maxRadius)
+        #expect(config.tmuxBin == Config.defaults.tmuxBin)
+        #expect(config.animate == Config.defaults.animate)
     }
 
-    @Test("parse boolean values (yes/no)")
-    func testParseBoolYesNo() {
-        let text = """
-        SHOW_DIRECTION_HINTS=yes
-        ANIMATE=no
-        """
-
-        let config = Config.parse(text)
-
-        #expect(config.showDirectionHints == true)
-        #expect(config.animate == false)
-    }
-
-    @Test("parse boolean values (case insensitive)")
-    func testParseBoolCaseInsensitive() {
-        let text = """
-        SHOW_DIRECTION_HINTS=TRUE
-        ANIMATE=False
-        """
-
-        let config = Config.parse(text)
-
-        #expect(config.showDirectionHints == true)
-        #expect(config.animate == false)
-    }
-
-    @Test("parse with quotes")
-    func testParseWithQuotes() {
-        let text = """
-        TMUX_BIN="/opt/homebrew/bin/tmux"
-        GHOSTTY_BUNDLE_ID='com.mitchellh.ghostty'
-        """
-
-        let config = Config.parse(text)
-
-        #expect(config.tmuxBin == "/opt/homebrew/bin/tmux")
-        #expect(config.ghosttyBundleID == "com.mitchellh.ghostty")
-    }
-
-    @Test("parse ignores comments")
-    func testParseIgnoresComments() {
-        let text = """
-        # This is a comment
-        DWELL_MS=300
-        # Another comment
-        IDLE_HIDE_MS=5000
-        """
-
-        let config = Config.parse(text)
+    @Test("unknown keys are ignored")
+    func testParseIgnoresUnknown() throws {
+        // Forward compatibility: a config written for a newer build must not
+        // break an older binary.
+        let config = try Config.parse("""
+        { "dwellMs": 300, "someFutureKey": "whatever", "idleHideMs": 5000 }
+        """)
 
         #expect(config.dwellMs == 300)
         #expect(config.idleHideMs == 5000)
     }
 
-    @Test("parse ignores blank lines")
-    func testParseIgnoresBlankLines() {
-        let text = """
+    // MARK: - JSON5 affordances
 
-        DWELL_MS=300
+    @Test("comments are accepted")
+    func testParseComments() throws {
+        let config = try Config.parse("""
+        {
+          // Raise this if quick Meh chords flash the HUD.
+          "dwellMs": 250,
+          /* block comments too */
+          "maxRadius": 6
+        }
+        """)
 
-        IDLE_HIDE_MS=5000
-
-        """
-
-        let config = Config.parse(text)
-
-        #expect(config.dwellMs == 300)
-        #expect(config.idleHideMs == 5000)
+        #expect(config.dwellMs == 250)
+        #expect(config.maxRadius == 6)
     }
 
-    @Test("parse ignores unknown keys")
-    func testParseIgnoresUnknown() {
-        let text = """
-        DWELL_MS=300
-        UNKNOWN_KEY=value
-        IDLE_HIDE_MS=5000
-        """
+    @Test("trailing commas are accepted")
+    func testParseTrailingComma() throws {
+        let config = try Config.parse("""
+        {
+          "dwellMs": 250,
+          "maxRadius": 6,
+        }
+        """)
 
-        let config = Config.parse(text)
-
-        #expect(config.dwellMs == 300)
-        #expect(config.idleHideMs == 5000)
+        #expect(config.dwellMs == 250)
+        #expect(config.maxRadius == 6)
     }
 
-    @Test("parse ignores malformed lines")
-    func testParseMalformedLines() {
-        let text = """
-        DWELL_MS=300
-        this line has no equals sign
-        IDLE_HIDE_MS=5000
-        """
-
-        let config = Config.parse(text)
-
-        #expect(config.dwellMs == 300)
-        #expect(config.idleHideMs == 5000)
+    @Test("unquoted keys are accepted")
+    func testParseUnquotedKeys() throws {
+        let config = try Config.parse("{ dwellMs: 250 }")
+        #expect(config.dwellMs == 250)
     }
 
-    @Test("parse later duplicates win")
-    func testParseDuplicatesWin() {
-        let text = """
-        DWELL_MS=300
-        DWELL_MS=500
-        """
+    // MARK: - Clamping
 
-        let config = Config.parse(text)
-
-        #expect(config.dwellMs == 500)
-    }
-
-    @Test("parse invalid int keeps default")
-    func testParseInvalidIntKeepsDefault() {
-        let text = """
-        DWELL_MS=not_a_number
-        """
-
-        let config = Config.parse(text)
-
-        #expect(config.dwellMs == 150)  // default
-    }
-
-    @Test("parse int clamping to 0")
-    func testParseClampingNegative() {
-        let text = """
-        DWELL_MS=-100
-        IDLE_HIDE_MS=-50
-        """
-
-        let config = Config.parse(text)
+    @Test("negative durations clamp to 0")
+    func testParseClampingNegative() throws {
+        let config = try Config.parse("""
+        {
+          "dwellMs": -100,
+          "idleHideMs": -50,
+          "maxDisplayMs": -1,
+          "modifierPollMs": -5,
+          "scrollAnimationMs": -200
+        }
+        """)
 
         #expect(config.dwellMs == 0)
         #expect(config.idleHideMs == 0)
+        #expect(config.maxDisplayMs == 0)
+        #expect(config.modifierPollMs == 0)
+        #expect(config.scrollAnimationMs == 0)
     }
 
-    @Test("parse maxRadius clamping to 1")
-    func testParseClampingMaxRadius() {
-        let text = """
-        MAX_RADIUS=0
-        """
-
-        let config = Config.parse(text)
-
-        #expect(config.maxRadius == 1)
+    @Test("maxRadius clamps to 1")
+    func testParseClampingMaxRadius() throws {
+        // A radius of 0 would render a HUD with no rows in it at all.
+        #expect(try Config.parse(#"{ "maxRadius": 0 }"#).maxRadius == 1)
+        #expect(try Config.parse(#"{ "maxRadius": -3 }"#).maxRadius == 1)
     }
 
-    @Test("parse whitespace trimming")
-    func testParseWhitespaceTrimming() {
-        let text = """
-          DWELL_MS  =  300
-          TMUX_BIN = /usr/bin/tmux
-        """
+    // MARK: - Malformed input
 
-        let config = Config.parse(text)
-
-        #expect(config.dwellMs == 300)
-        #expect(config.tmuxBin == "/usr/bin/tmux")
+    @Test("invalid JSON throws")
+    func testParseInvalidJSONThrows() {
+        // The KEY=value parser skipped bad lines silently. It cannot work that
+        // way here: a JSON document is parsed whole, so ignoring the failure
+        // would silently revert every other setting in the file too.
+        #expect(throws: ConfigError.self) {
+            try Config.parse("{ this is not json")
+        }
     }
 
-    @Test("configURL property exists and is not empty")
+    @Test("a non-object document throws")
+    func testParseNonObjectThrows() {
+        #expect(throws: ConfigError.self) {
+            try Config.parse("[1, 2, 3]")
+        }
+    }
+
+    @Test("a wrongly typed value throws and names the key")
+    func testParseTypeMismatchThrows() {
+        let error = #expect(throws: ConfigError.self) {
+            try Config.parse(#"{ "dwellMs": "not a number" }"#)
+        }
+
+        // The stock DecodingError message says only that the data "isn't in the
+        // correct format", which is useless for finding the typo. Naming the
+        // offending key is the whole reason describe() exists.
+        #expect(error?.description.contains("dwellMs") == true)
+    }
+
+    @Test("a wrongly typed bool throws")
+    func testParseBoolTypeMismatchThrows() {
+        // Notably `"animate": "yes"` was valid in the old format and is not
+        // valid here -- worth a test so the break is deliberate, not incidental.
+        #expect(throws: ConfigError.self) {
+            try Config.parse(#"{ "animate": "yes" }"#)
+        }
+    }
+
+    @Test("an explicit null falls back to the default")
+    func testParseNullUsesDefault() throws {
+        // Decoding into `Int?` maps an explicit JSON null to nil, which merges
+        // as "no override". That reads correctly -- null and an absent key mean
+        // the same thing to a reader -- so it is pinned here as intended
+        // behaviour rather than left as an accident of Codable.
+        let config = try Config.parse(#"{ "dwellMs": null, "maxRadius": 7 }"#)
+
+        #expect(config.dwellMs == Config.defaults.dwellMs)
+        #expect(config.maxRadius == 7)
+    }
+
+    // MARK: - Locations
+
+    @Test("configURL points at config.json")
     func testConfigURLExists() {
         let url = Config.configURL
         #expect(!url.path.isEmpty)
-        #expect(url.path.contains(".config/tmux-switcher/config.env"))
+        #expect(url.path.contains(".config/tmux-switcher/config.json"))
+    }
+
+    @Test("legacyConfigURL still points at the pre-JSON config.env")
+    func testLegacyConfigURLExists() {
+        // Nothing reads this; it exists so a leftover file can be detected and
+        // reported instead of appearing to be silently ignored.
+        #expect(Config.legacyConfigURL.path.contains(".config/tmux-switcher/config.env"))
     }
 
     @Test("socketPath property exists and is not empty")
@@ -265,12 +258,27 @@ struct ConfigTests {
     }
 
     @Test("equality")
-    func testEquality() {
-        let config1 = Config.parse("DWELL_MS=300")
-        let config2 = Config.parse("DWELL_MS=300")
-        let config3 = Config.parse("DWELL_MS=500")
+    func testEquality() throws {
+        let config1 = try Config.parse(#"{ "dwellMs": 300 }"#)
+        let config2 = try Config.parse(#"{ "dwellMs": 300 }"#)
+        let config3 = try Config.parse(#"{ "dwellMs": 500 }"#)
 
         #expect(config1 == config2)
         #expect(config1 != config3)
+    }
+
+    @Test("formatting differences do not change the result")
+    func testEqualityAcrossFormatting() throws {
+        let compact = try Config.parse(#"{"dwellMs":300,"maxRadius":6}"#)
+        let sprawling = try Config.parse("""
+        {
+            "maxRadius":   6,
+
+            // order and whitespace are irrelevant
+            "dwellMs":     300,
+        }
+        """)
+
+        #expect(compact == sprawling)
     }
 }
