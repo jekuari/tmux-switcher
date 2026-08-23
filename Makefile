@@ -9,7 +9,20 @@
 APP_NAME      := TmuxSwitcher
 BUNDLE_ID     := com.rferegrino.tmux-switcher
 SIGN_IDENTITY ?= tmux-switcher-dev
-INSTALL_DIR   := /Applications
+# Override to install somewhere that does not need elevated privileges, e.g.
+# `make install INSTALL_DIR=~/Applications`. ~/Applications is a first-class
+# location on macOS: Login Items, the Accessibility list and LaunchServices
+# all treat it the same as /Applications.
+INSTALL_DIR   ?= /Applications
+
+# Prefix for the privileged steps of `install` -- and ONLY those steps.
+#
+# Do not reach for `sudo make install`. It would run the build and the codesign
+# as root, and the tmux-switcher-dev identity lives in YOUR login keychain, not
+# root's, so signing fails outright. Were it to succeed it would leave a
+# root-owned app bundle. `make install SUDO=sudo` is the correct form: it
+# builds and signs as you, and elevates only the copy into place.
+SUDO          ?=
 BUILD_DIR     := .build/release
 DIST_DIR      ?= dist
 APP_BUNDLE    := $(DIST_DIR)/$(APP_NAME).app
@@ -71,6 +84,8 @@ help:
 	@echo "  make dmg      - package the ALREADY-SIGNED bundle as a .dmg"
 	@echo "                  (for a one-shot local disk image: make sign dmg)"
 	@echo "  make install  - sign, then install to $(INSTALL_DIR)"
+	@echo "                  (INSTALL_DIR=~/Applications for a no-sudo install;"
+	@echo "                   SUDO=sudo to elevate only the copy, not the build)"
 	@echo "  make run      - install, then launch the app"
 	@echo "  make demo     - run the visual harness (swift run $(APP_NAME) --demo)"
 	@echo "  make logs     - stream this app's unified logs"
@@ -198,8 +213,9 @@ install: sign
 	@echo "==> Stopping any running instance..."
 	pkill -x $(APP_NAME) || true
 	@echo "==> Installing to $(INSTALL_DIR)..."
-	rm -rf "$(INSTALL_DIR)/$(APP_NAME).app"
-	cp -R "$(APP_BUNDLE)" "$(INSTALL_DIR)/$(APP_NAME).app"
+	$(SUDO) mkdir -p "$(INSTALL_DIR)"
+	$(SUDO) rm -rf "$(INSTALL_DIR)/$(APP_NAME).app"
+	$(SUDO) cp -R "$(APP_BUNDLE)" "$(INSTALL_DIR)/$(APP_NAME).app"
 	@echo "==> Installed $(INSTALL_DIR)/$(APP_NAME).app"
 	@$(MAKE) --no-print-directory hooks
 
@@ -220,9 +236,9 @@ hooks:
 	@echo "Paste into your own tmux.conf — this Makefile will never write to it for you:"
 	@echo "------------------------------------------------------------------------------"
 	@echo ""
-	@echo "set-hook -ga session-created \"run -b '/Applications/TmuxSwitcher.app/Contents/MacOS/TmuxSwitcher --notify sessions-changed'\""
-	@echo "set-hook -ga session-closed  \"run -b '/Applications/TmuxSwitcher.app/Contents/MacOS/TmuxSwitcher --notify sessions-changed'\""
-	@echo "set-hook -ga session-renamed \"run -b '/Applications/TmuxSwitcher.app/Contents/MacOS/TmuxSwitcher --notify sessions-changed'\""
+	@echo "set-hook -ga session-created \"run -b '$(INSTALL_DIR)/$(APP_NAME).app/Contents/MacOS/$(APP_NAME) --notify sessions-changed'\""
+	@echo "set-hook -ga session-closed  \"run -b '$(INSTALL_DIR)/$(APP_NAME).app/Contents/MacOS/$(APP_NAME) --notify sessions-changed'\""
+	@echo "set-hook -ga session-renamed \"run -b '$(INSTALL_DIR)/$(APP_NAME).app/Contents/MacOS/$(APP_NAME) --notify sessions-changed'\""
 	@echo ""
 	@echo "Then reload tmux's config:"
 	@echo ""
