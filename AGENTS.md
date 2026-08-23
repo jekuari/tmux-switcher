@@ -201,7 +201,11 @@ line, so a truncated download cannot execute a half-read script, and must never
   reasoning behind a workaround is a regression even if the code still works.
 - Version lives in `Resources/Info.plist`. `make bundle` stamps `VERSION` and
   `BUILD_NUMBER` into the bundle's **copy**, never back into the checked-in
-  file, so a release build leaves the tree clean.
+  file, so a release build leaves the tree clean. Anything that needs to *show*
+  the version reads it back from `Bundle.main`; never hardcode a version
+  literal, which silently disagrees with the release it shipped in the moment
+  the two diverge. `swift run` has no bundle Info.plist, so that read must
+  tolerate nil.
 - `TmuxSwitcher --probe-tmux` is the first diagnostic to reach for: it
   exercises the real tmux path without needing Accessibility, and reports
   config errors.
