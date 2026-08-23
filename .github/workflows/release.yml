@@ -310,10 +310,11 @@ jobs:
 
       - name: Upload dry-run artifacts
         if: steps.version.outputs.is_release != 'true'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: tmux-switcher-${{ steps.version.outputs.version }}
           path: |
             dist/*.tar.gz
             dist/*.dmg
+            dist/SHA256SUMS
           if-no-files-found: error
