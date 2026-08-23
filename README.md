@@ -131,6 +131,7 @@ Other useful targets:
 ```sh
 make build   # swift build -c release
 make test    # swift test
+make icon    # regenerate Resources/AppIcon.icns
 make bundle  # assemble the .app without signing/installing
 make sign    # sign the assembled bundle
 make dmg     # package the already-signed bundle as a .dmg
