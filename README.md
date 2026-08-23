@@ -102,12 +102,19 @@ make build   # swift build -c release
 make test    # swift test
 make bundle  # assemble the .app without signing/installing
 make sign    # sign the assembled bundle
+make dmg     # package the already-signed bundle as a .dmg
 make run     # install, then open the app
 make demo    # run the visual harness: swift run TmuxSwitcher --demo
 make logs    # stream this app's unified logs
 make hooks   # re-print the optional tmux hook snippet
-make clean   # remove .build
+make clean   # remove .build and dist
 ```
+
+Two variables are worth knowing about. `UNIVERSAL=1` builds arm64 and x86_64
+and `lipo`s them into one binary (off by default: it doubles compile time for
+no local benefit). `VERSION=1.2.3 BUILD_NUMBER=42` stamps those into the
+bundle's `Info.plist` copy — never back into `Resources/Info.plist`, so a
+release build leaves the working tree clean.
 
 ## Optional tmux hooks
 
@@ -181,6 +188,56 @@ Run `make cert`. If it reports that non-interactive trust could not be
 established, follow the manual Keychain Access steps it prints (Keychain
 Access → login keychain → My Certificates → `tmux-switcher-dev` → Trust →
 Code Signing → Always Trust).
+
+## Releasing
+
+Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
+which tests, builds a universal bundle, and publishes a GitHub Release.
+
+What that release contains depends on whether Developer ID credentials are
+configured as repository secrets, and the reason is worth spelling out, because
+it is the one thing about macOS distribution that catches people out.
+
+**The self-signed `tmux-switcher-dev` identity only works on the machine that
+created it.** `scripts/make-cert.sh` finishes with `security add-trusted-cert`,
+which tells *your* login keychain to trust that root. The certificate travels
+inside the `.app`; that trust decision does not.
+
+That alone is survivable — but two separate mechanisms are in play, and they
+fail differently:
+
+- **Gatekeeper** only inspects *quarantined* code. Anything a browser downloads
+  gets the `com.apple.quarantine` attribute, and macOS then demands a Developer
+  ID signature *plus* a notarization ticket before it will launch. A self-signed
+  build has neither. Since macOS 15 the Control-click → Open escape hatch is
+  gone, so the user has to dig through System Settings → Privacy & Security to
+  approve it — a miserable first run for an `LSUIElement` agent that shows no
+  window either way. A locally compiled build is never quarantined, which is
+  precisely why `make install` works and a downloaded build would not.
+- **TCC / Accessibility** is indifferent to trust. The designated requirement
+  this project is careful to keep stable is a hash comparison against the leaf
+  certificate; it never validates the chain. So the grant-survives-rebuild
+  property holds on any machine.
+
+So the pipeline never publishes an unsigned `.app`. Without credentials it
+publishes a **source tarball** and points users at `make cert && make install`.
+With credentials it additionally publishes a **Developer ID-signed,
+Apple-notarized `.dmg`** that opens with no warning.
+
+To turn the signed path on, enroll in the Apple Developer Program ($99/year)
+and add five repository secrets — `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`,
+`NOTARY_KEY_P8`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`. The workflow header
+documents exactly how to produce each one. Nothing else changes; the next tag
+picks them up.
+
+> ⚠️ The first signed release revokes every existing user's Accessibility
+> grant, exactly once. Switching from `tmux-switcher-dev` to a Developer ID
+> certificate changes the app's designated requirement, and a changed DR is
+> indistinguishable from a different app as far as TCC is concerned. It does
+> not recur on later updates.
+
+`workflow_dispatch` runs the same job as a dry run: it builds everything and
+uploads the results as workflow artifacts without creating a release.
 
 ## License
 

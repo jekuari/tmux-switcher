@@ -1,0 +1,303 @@
+# Tag-triggered release pipeline.
+#
+# The signing half of this workflow is deliberately OPTIONAL and gated on
+# repository secrets being present. Without them the job still runs to
+# completion and publishes a source tarball; with them it additionally
+# produces a Developer ID-signed, Apple-notarized .dmg. That split exists
+# because macOS distribution has a hard paywall in the middle of it:
+#
+#   * Anything a browser downloads gets the com.apple.quarantine attribute,
+#     and Gatekeeper then demands a Developer ID signature AND a notarization
+#     ticket before it will launch. A self-signed build has neither, so
+#     shipping one as a download would just hand users an "Apple could not
+#     verify this app" dead end. Hence: no unsigned .app is ever published.
+#   * A locally compiled build is never quarantined, so Gatekeeper never runs
+#     on it. That is why the source-tarball + `make cert && make install`
+#     path works with no Apple Developer Program membership at all.
+#
+# To turn the signed path on, add these repository secrets:
+#
+#   MACOS_CERT_P12       base64 of a .p12 holding the "Developer ID
+#                        Application" certificate and its private key
+#                        (base64 -i cert.p12 | pbcopy)
+#   MACOS_CERT_PASSWORD  the passphrase used when exporting that .p12
+#   NOTARY_KEY_P8        base64 of the App Store Connect API key .p8 file
+#   NOTARY_KEY_ID        that key's Key ID
+#   NOTARY_ISSUER_ID     the Issuer ID from App Store Connect > Integrations
+#
+# Nothing else needs to change; the next tag picks them up automatically.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to dry-run, without the leading v (e.g. 0.2.0). Builds everything and uploads the results as workflow artifacts, but does NOT create a release.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # macOS 26 runner required: OverlayView.swift references NSGlassEffectView
+    # behind `#available(macOS 26.0, *)`, which needs the macOS 26 SDK to
+    # compile even though the deployment target stays at 14.0.
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            IS_RELEASE=true
+          else
+            VERSION="${{ inputs.version }}"
+            IS_RELEASE=false
+          fi
+          # CFBundleShortVersionString must be one to three dot-separated
+          # integers; anything else makes the bundle silently malformed.
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}$'; then
+            echo "::error::Version '$VERSION' is not a valid CFBundleShortVersionString (expected N, N.N, or N.N.N)."
+            exit 1
+          fi
+          echo "version=$VERSION"       >> "$GITHUB_OUTPUT"
+          echo "is_release=$IS_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "Building version $VERSION (release: $IS_RELEASE)"
+
+      - name: Check the toolchain can build against the macOS 26 SDK
+        run: |
+          set -euo pipefail
+          SDK="$(xcrun --sdk macosx --show-sdk-version)"
+          echo "macOS SDK: $SDK / Swift: $(swift --version | head -1)"
+          if [ "${SDK%%.*}" -lt 26 ]; then
+            echo "::error::SDK $SDK is too old. Sources/TmuxSwitcher/OverlayView.swift uses NSGlassEffectView behind #available(macOS 26.0, *), which needs the macOS 26 SDK to compile."
+            exit 1
+          fi
+
+      - name: Test
+        run: make test
+
+      - name: Build universal app bundle
+        run: |
+          make bundle UNIVERSAL=1 \
+            VERSION="${{ steps.version.outputs.version }}" \
+            BUILD_NUMBER="${{ github.run_number }}"
+          lipo -info dist/TmuxSwitcher.app/Contents/MacOS/TmuxSwitcher
+
+      - name: Build source tarball
+        id: tarball
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          NAME="tmux-switcher-$VERSION"
+          mkdir -p dist
+          # git archive from the checked-out commit, so the tarball is
+          # byte-reproducible from the tag rather than depending on GitHub's
+          # auto-generated archives (whose checksums are not contractually
+          # stable).
+          git archive --format=tar.gz --prefix="$NAME/" \
+            -o "dist/$NAME.tar.gz" "$GITHUB_SHA"
+          echo "name=$NAME.tar.gz" >> "$GITHUB_OUTPUT"
+          shasum -a 256 "dist/$NAME.tar.gz"
+
+      # ---------------------------------------------------------------- gate
+      - name: Determine whether signing credentials are available
+        id: gate
+        env:
+          CERT: ${{ secrets.MACOS_CERT_P12 }}
+          NOTARY: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          if [ -n "$CERT" ] && [ -n "$NOTARY" ]; then
+            echo "signing=true" >> "$GITHUB_OUTPUT"
+            echo "Developer ID credentials found: producing a signed, notarized .dmg."
+          else
+            echo "signing=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Developer ID credentials configured. Publishing the source tarball only; no .dmg will be built. See the header of .github/workflows/release.yml for the secrets to add."
+          fi
+
+      # ------------------------------------------------------------- signing
+      - name: Import signing certificate
+        if: steps.gate.outputs.signing == 'true'
+        id: identity
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          # Random, ephemeral, never leaves this runner.
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          # Without this, codesign blocks on a GUI prompt for keychain access
+          # that a headless runner can never answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          # Prepend it to the search list so `security find-identity` (which
+          # the Makefile's sign target checks) can see it. The existing list is
+          # saved and restored during cleanup rather than assuming the runner's
+          # login keychain is called any particular thing.
+          security list-keychain -d user | tr -d '"' | tr -s ' ' \
+            > "$RUNNER_TEMP/keychains.txt"
+          # shellcheck disable=SC2046  # word splitting is the point here
+          security list-keychain -d user -s "$KEYCHAIN" $(cat "$RUNNER_TEMP/keychains.txt")
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | grep 'Developer ID Application' | head -1 \
+            | sed -E 's/.*"(.*)"/\1/')"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No 'Developer ID Application' identity found in the imported certificate. A Mac Development or Apple Distribution certificate will not work for distribution outside the App Store."
+            security find-identity -v -p codesigning "$KEYCHAIN" || true
+            exit 1
+          fi
+          echo "Signing identity: $IDENTITY"
+          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+
+      - name: Sign the app
+        if: steps.gate.outputs.signing == 'true'
+        run: |
+          set -euo pipefail
+          # TIMESTAMP=1 requests a secure timestamp from Apple's timestamp
+          # server. The notary service rejects signatures without one.
+          make sign UNIVERSAL=1 TIMESTAMP=1 \
+            SIGN_IDENTITY="${{ steps.identity.outputs.identity }}" \
+            VERSION="${{ steps.version.outputs.version }}" \
+            BUILD_NUMBER="${{ github.run_number }}"
+          codesign --verify --strict --verbose=2 dist/TmuxSwitcher.app
+
+      - name: Set up notary credentials
+        if: steps.gate.outputs.signing == 'true'
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          chmod 600 "$RUNNER_TEMP/notary.p8"
+
+      - name: Notarize and staple the app
+        if: steps.gate.outputs.signing == 'true'
+        env:
+          KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          # The .app is notarized and stapled BEFORE it goes into the disk
+          # image. Stapling the .dmg alone would leave the app itself with no
+          # ticket once a user drags it to /Applications, forcing Gatekeeper
+          # into an online check that fails on a machine that happens to be
+          # offline on first launch.
+          ditto -c -k --keepParent dist/TmuxSwitcher.app "$RUNNER_TEMP/TmuxSwitcher.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/TmuxSwitcher.zip" \
+            --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$KEY_ID" \
+            --issuer "$ISSUER_ID" \
+            --wait --timeout 30m
+          xcrun stapler staple dist/TmuxSwitcher.app
+          xcrun stapler validate dist/TmuxSwitcher.app
+
+      - name: Build, sign, notarize and staple the disk image
+        if: steps.gate.outputs.signing == 'true'
+        env:
+          KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          DMG="dist/TmuxSwitcher-$VERSION.dmg"
+
+          make dmg VERSION="$VERSION"
+
+          # Disk images are signed with the Developer ID *Application* cert,
+          # not the Installer one (that is only for .pkg).
+          codesign --force --timestamp \
+            --sign "${{ steps.identity.outputs.identity }}" "$DMG"
+          xcrun notarytool submit "$DMG" \
+            --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$KEY_ID" \
+            --issuer "$ISSUER_ID" \
+            --wait --timeout 30m
+          xcrun stapler staple "$DMG"
+
+          echo "==> Final Gatekeeper assessment (what a user's Mac will do):"
+          spctl --assess --type open --context context:primary-signature -vv "$DMG"
+          shasum -a 256 "$DMG"
+
+      - name: Clean up credentials
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/cert.p12"
+          if [ -n "${KEYCHAIN:-}" ]; then
+            if [ -f "$RUNNER_TEMP/keychains.txt" ]; then
+              # shellcheck disable=SC2046
+              security list-keychain -d user -s $(cat "$RUNNER_TEMP/keychains.txt") || true
+            fi
+            security delete-keychain "$KEYCHAIN" || true
+          fi
+          rm -f "$RUNNER_TEMP/keychains.txt"
+
+      # ------------------------------------------------------------- publish
+      - name: Compose release notes
+        run: |
+          set -euo pipefail
+          # The two bodies live in .github/release-notes/ rather than inline
+          # here: a heredoc nested inside a YAML block scalar has to be
+          # indented to satisfy YAML and dedented to satisfy the shell, which
+          # is a needless trap for something that is just prose.
+          if [ "${{ steps.gate.outputs.signing }}" = "true" ]; then
+            SRC=.github/release-notes/signed.md
+          else
+            SRC=.github/release-notes/source-only.md
+          fi
+          sed "s/VERSION_PLACEHOLDER/${{ steps.version.outputs.version }}/g" \
+            "$SRC" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create GitHub release
+        if: steps.version.outputs.is_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ASSETS=("dist/${{ steps.tarball.outputs.name }}")
+          if [ "${{ steps.gate.outputs.signing }}" = "true" ]; then
+            ASSETS+=("dist/TmuxSwitcher-${{ steps.version.outputs.version }}.dmg")
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --generate-notes \
+            --verify-tag \
+            "${ASSETS[@]}"
+
+      - name: Upload dry-run artifacts
+        if: steps.version.outputs.is_release != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmux-switcher-${{ steps.version.outputs.version }}
+          path: |
+            dist/*.tar.gz
+            dist/*.dmg
+          if-no-files-found: error
