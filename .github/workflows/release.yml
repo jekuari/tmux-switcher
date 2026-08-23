@@ -52,7 +52,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -282,7 +282,13 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          shasum -a 256 ./*.tar.gz ./*.dmg 2>/dev/null | sed 's|\./||' > SHA256SUMS
+          # nullglob is load-bearing: on the unsigned path no .dmg is built, and
+          # without it bash hands shasum the literal string "*.dmg". shasum then
+          # fails, and pipefail turns that into a failed release over an asset
+          # that was never meant to exist.
+          shopt -s nullglob
+          assets=(*.tar.gz *.dmg)
+          shasum -a 256 "${assets[@]}" > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create GitHub release
@@ -304,7 +310,7 @@ jobs:
 
       - name: Upload dry-run artifacts
         if: steps.version.outputs.is_release != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: tmux-switcher-${{ steps.version.outputs.version }}
           path: |
