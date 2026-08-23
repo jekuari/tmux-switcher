@@ -260,10 +260,13 @@ creates, kills, or renames sessions, so it cannot be the cause of any
 session-state change itself.
 
 **No signing identity found / `make sign` refuses to run.**
-Run `make cert`. If it reports that non-interactive trust could not be
-established, follow the manual Keychain Access steps it prints (Keychain
-Access → login keychain → My Certificates → `tmux-switcher-dev` → Trust →
-Code Signing → Always Trust).
+Run `make cert`. If it says trust could not be established non-interactively,
+ignore it — that is a note, not a failure. Trust only affects Gatekeeper
+assessment (`spctl`), which never runs on locally built code because locally
+built code is never quarantined. The designated requirement that actually
+protects your Accessibility grant is a hash comparison against the leaf
+certificate and never walks a trust chain. What matters is that the identity
+exists at all, which is what both `make cert` and `make sign` check.
 
 ## Releasing
 

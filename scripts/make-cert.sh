@@ -13,6 +13,22 @@
 # instead of the binary's hash, so rebuilding the app does NOT invalidate
 # the TCC grant. This script exists solely to make that identity durable.
 #
+# ON TRUST (and why this script no longer fails without it):
+# Trusting the certificate is OPTIONAL and affects none of the above. The
+# designated requirement codesign derives from it is a hash comparison
+# against the leaf certificate --
+#     identifier "..." and certificate leaf = H"<sha1>"
+# -- which never walks a trust chain. An untrusted self-signed certificate
+# therefore protects the Accessibility grant exactly as well as a trusted
+# one. Trust only affects Gatekeeper assessment (`spctl`), which never runs
+# on locally built code, because locally built code is never quarantined.
+#
+# So every check below uses `security find-identity` WITHOUT `-v`. The `-v`
+# form lists only explicitly trusted certificates, and using it meant this
+# script exited 1 -- printing a page of manual Keychain Access instructions
+# -- on machines where the certificate was present, usable, and already
+# signing apps correctly. `make sign` checks this same non-`-v` condition.
+#
 set -euo pipefail
 
 IDENTITY_NAME="tmux-switcher-dev"
@@ -23,12 +39,18 @@ log()  { printf '==> %s\n' "$*"; }
 warn() { printf '!!  %s\n' "$*" >&2; }
 
 # ---------------------------------------------------------------------------
-# 1. Idempotency check: if the identity already exists AND is trusted, we're
-#    done.
+# 1. Idempotency check: if the identity already exists, we're done. Trust is
+#    not part of the condition -- see ON TRUST above.
+#
+#    The here-string is not stylistic. Under `set -o pipefail`, `grep -q`
+#    exits the instant it matches, the upstream `security` takes SIGPIPE, and
+#    the pipeline reports failure precisely when the identity WAS found. That
+#    only works today because the output fits in the pipe buffer, which is not
+#    a property worth depending on.
 # ---------------------------------------------------------------------------
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "\"${IDENTITY_NAME}\""; then
+if grep -q "\"${IDENTITY_NAME}\"" <<< "$(security find-identity -p codesigning 2>/dev/null || true)"; then
     log "Identity \"${IDENTITY_NAME}\" already exists in the keychain. Nothing to do."
-    security find-identity -v -p codesigning
+    security find-identity -p codesigning
     exit 0
 fi
 
@@ -47,8 +69,9 @@ CERT_FILE="${WORKDIR}/tmux-switcher-dev.pem"
 # every `security ... -c tmux-switcher-dev` lookup ambiguous.
 if security find-certificate -c "${IDENTITY_NAME}" -p "${LOGIN_KEYCHAIN}" > "${CERT_FILE}" 2>/dev/null \
     && [ -s "${CERT_FILE}" ]; then
-    log "Found an existing (untrusted) \"${IDENTITY_NAME}\" certificate already in the keychain."
-    log "Re-using it and retrying the trust step, instead of generating a new one."
+    log "Found an existing \"${IDENTITY_NAME}\" certificate in the keychain, but no"
+    log "usable identity for it (the private key may be missing). Re-using the"
+    log "certificate rather than generating a duplicate."
 else
     log "No existing \"${IDENTITY_NAME}\" certificate found. Creating one..."
 
@@ -104,9 +127,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Trust: try the non-interactive user-domain form first. Trusting for
-#    code signing is what lets `codesign` build a stable designated
-#    requirement from this cert without a GUI prompt on every use.
+# 4. Trust: attempted opportunistically, and NOT required. It only affects
+#    Gatekeeper assessment (`spctl`); the stable designated requirement that
+#    protects the Accessibility grant comes from the certificate itself, not
+#    from any trust setting on it. See ON TRUST at the top.
 #
 # This cert is self-signed (issuer == subject), so the correct Security
 # Trust Settings result type is "trustRoot" (using "trustAsRoot" on an
@@ -134,63 +158,33 @@ run_with_timeout() {
 }
 
 log "Attempting to trust the certificate for code signing (user domain)..."
-TRUST_OK=0
 if run_with_timeout "${TRUST_TIMEOUT_SECS}" security add-trusted-cert -r trustRoot -p codeSign "${CERT_FILE}"; then
-    TRUST_OK=1
     log "Trust established in the user domain."
 else
-    warn "Non-interactive trust (user domain) did not succeed within ${TRUST_TIMEOUT_SECS}s"
-    warn "(it may be waiting on a GUI authorization dialog this session can't show)."
-    warn "The admin-domain form (security add-trusted-cert -d ...) requires sudo and is not attempted automatically here."
-fi
-
-if [ "${TRUST_OK}" -ne 1 ]; then
-    cat >&2 <<EOF
-
-------------------------------------------------------------------------------
-MANUAL STEP REQUIRED: trust the "${IDENTITY_NAME}" certificate
-------------------------------------------------------------------------------
-Automatic, non-interactive trust could not be established. The certificate
-and private key ARE now in your login keychain and codesign can already use
-them, but without explicit trust for code signing, macOS treats signatures
-made with it as coming from an unverified source, and \`security
-find-identity -v -p codesigning\` will not list it as valid — which this
-build's \`make sign\` step checks for. To finish, grant trust manually:
-
-  1. Open Keychain Access (Applications > Utilities > Keychain Access).
-  2. Select the "login" keychain in the sidebar, "My Certificates" category.
-  3. Find the certificate named "${IDENTITY_NAME}".
-  4. Double-click it to open its info panel.
-  5. Expand the "Trust" section.
-  6. Set "Code Signing" to "Always Trust".
-  7. Set the top-level "When using this certificate" pop-up to "Always Trust"
-     if you want to be extra sure.
-  8. Close the panel; enter your password if prompted.
-
-Why this matters: this trust setting is what gives the certificate a stable
-designated requirement macOS will keep honoring across rebuilds — which is
-the entire point of using a real certificate instead of ad-hoc signing. It
-is what protects your Accessibility permission grant from being silently
-revoked every time you rebuild the app.
-------------------------------------------------------------------------------
-
-EOF
+    log "Could not establish trust non-interactively within ${TRUST_TIMEOUT_SECS}s. Continuing."
+    log "This is not a failure. Signing works without it, and so does the stable"
+    log "designated requirement that protects the Accessibility grant -- see ON"
+    log "TRUST at the top of this script. Trust only changes how \`spctl\` assesses"
+    log "the app, and \`spctl\` never runs on locally built code."
+    log "To set it anyway: Keychain Access > login > My Certificates >"
+    log "\"${IDENTITY_NAME}\" > Trust > Code Signing > Always Trust."
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Verify.
+# 5. Verify. The condition being checked is "codesign can use this identity",
+#    not "this identity is trusted" -- so, again, no `-v`. This is the exact
+#    check `make sign` performs before it will sign anything.
 # ---------------------------------------------------------------------------
-log "Verifying identity is now available to codesign..."
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "\"${IDENTITY_NAME}\""; then
+log "Verifying the identity is available to codesign..."
+if grep -q "\"${IDENTITY_NAME}\"" <<< "$(security find-identity -p codesigning 2>/dev/null || true)"; then
     log "Success. Current codesigning identities:"
-    security find-identity -v -p codesigning
+    security find-identity -p codesigning
     exit 0
 else
-    warn "Identity \"${IDENTITY_NAME}\" was imported but is not showing up via"
-    warn "\`security find-identity -v -p codesigning\`. This usually means the"
-    warn "manual trust step above still needs to be completed, or the keychain"
+    warn "Identity \"${IDENTITY_NAME}\" was imported but does not show up via"
+    warn "\`security find-identity -p codesigning\`. This usually means the keychain"
     warn "search list does not include ${LOGIN_KEYCHAIN}."
     warn "Current state:"
-    security find-identity -v -p codesigning || true
+    security find-identity -p codesigning || true
     exit 1
 fi
