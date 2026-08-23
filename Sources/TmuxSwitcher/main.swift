@@ -20,7 +20,16 @@ if let index = arguments.firstIndex(of: "--notify") {
 // Diagnostic: exercise the real tmux path without needing Accessibility. Also
 // the first thing to reach for when the HUD shows nothing.
 if arguments.contains("--probe-tmux") {
-    let config = Config.load()
+    // Report a broken config here rather than swallowing it: "the HUD shows
+    // nothing" and "my config file has a typo in it" are the same symptom, and
+    // this is the command people reach for when they hit it.
+    var config = Config.defaults
+    do {
+        config = try Config.load()
+    } catch {
+        print("config: \(Config.configURL.path) is invalid, using defaults")
+        print("        \(error)")
+    }
     let sessions = TmuxClient.listSessions(tmuxBin: config.tmuxBin, timeout: 0.5)
     print("tmux binary: \(config.tmuxBin)")
     print("sessions (\(sessions.count)), in switch-client cycle order:")
@@ -28,7 +37,7 @@ if arguments.contains("--probe-tmux") {
         print("  [\(index)] \(name)")
     }
     if sessions.isEmpty {
-        print("  (none — is a tmux server running? check TMUX_BIN in config.env)")
+        print("  (none — is a tmux server running? check tmuxBin in config.json)")
     }
     exit(0)
 }
@@ -48,10 +57,12 @@ if arguments.contains("--help") || arguments.contains("-h") {
                                        Pin the HUD open with synthetic data,
                                        for iterating on the visuals
       TmuxSwitcher --notify <command>  Send a command to a running agent
+      TmuxSwitcher --probe-tmux        Print the tmux sessions this app sees,
+                                       in switch-client cycle order
       TmuxSwitcher --version
       TmuxSwitcher --help
 
-    Config: ~/.config/tmux-switcher/config.env (hot-reloaded on save)
+    Config: ~/.config/tmux-switcher/config.json (hot-reloaded on save)
     """)
     exit(0)
 }

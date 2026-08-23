@@ -8,31 +8,88 @@
 
 APP_NAME      := TmuxSwitcher
 BUNDLE_ID     := com.rferegrino.tmux-switcher
-SIGN_IDENTITY := tmux-switcher-dev
+SIGN_IDENTITY ?= tmux-switcher-dev
 INSTALL_DIR   := /Applications
 BUILD_DIR     := .build/release
-APP_BUNDLE    := $(BUILD_DIR)/$(APP_NAME).app
+DIST_DIR      ?= dist
+APP_BUNDLE    := $(DIST_DIR)/$(APP_NAME).app
 
-.PHONY: help build test cert bundle sign install run demo logs hooks clean
+# Version stamped into the bundle. Defaults to whatever Resources/Info.plist
+# already says, so local builds are unchanged; the release pipeline overrides
+# it from the git tag (VERSION=1.2.3 BUILD_NUMBER=<run number>).
+VERSION       ?= $(shell /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+BUILD_NUMBER  ?= $(shell /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" Resources/Info.plist)
+
+DMG           := $(DIST_DIR)/$(APP_NAME)-$(VERSION).dmg
+
+# Universal (arm64 + x86_64) builds are off by default: local development only
+# ever runs on this machine, and building both slices doubles compile time.
+# The release pipeline turns it on with UNIVERSAL=1.
+#
+# Note the use of --triple rather than SwiftPM's --arch. `swift build --arch
+# arm64 --arch x86_64` routes through xcbuild, which only ships with full
+# Xcode, so it fails outright on a CommandLineTools-only toolchain. Building
+# each triple separately uses the native SwiftPM build system and works on
+# both, then lipo stitches the slices together.
+UNIVERSAL     ?= 0
+MACOS_MIN     := 14.0    # keep in sync with `platforms:` in Package.swift
+ARM64_TRIPLE  := arm64-apple-macosx$(MACOS_MIN)
+X86_64_TRIPLE := x86_64-apple-macosx$(MACOS_MIN)
+UNIVERSAL_BIN := .build/universal/$(APP_NAME)
+
+ifeq ($(UNIVERSAL),1)
+BUNDLE_DEPS   := build-universal
+APP_BINARY    := $(UNIVERSAL_BIN)
+else
+BUNDLE_DEPS   := build
+APP_BINARY    := $(BUILD_DIR)/$(APP_NAME)
+endif
+
+# A secure timestamp is mandatory for anything submitted to Apple's notary
+# service, but it requires a round-trip to Apple's timestamp server on every
+# signature -- pointless latency for a local self-signed build, and a hard
+# failure when offline. Off by default; the release pipeline sets TIMESTAMP=1.
+ifeq ($(TIMESTAMP),1)
+CODESIGN_TIMESTAMP := --timestamp
+else
+CODESIGN_TIMESTAMP := --timestamp=none
+endif
+
+.PHONY: help build build-universal test cert bundle sign dmg install run demo logs hooks clean
 
 .DEFAULT_GOAL := help
 
 help:
 	@echo "tmux-switcher — available targets:"
 	@echo "  make build    - swift build -c release"
+	@echo "  make build-universal - build arm64 + x86_64 and lipo them together"
 	@echo "  make test     - swift test"
 	@echo "  make cert     - create/verify the tmux-switcher-dev signing identity"
 	@echo "  make bundle   - assemble $(APP_BUNDLE)"
 	@echo "  make sign     - codesign the app bundle with a stable identity"
+	@echo "  make dmg      - package the ALREADY-SIGNED bundle as a .dmg"
+	@echo "                  (for a one-shot local disk image: make sign dmg)"
 	@echo "  make install  - sign, then install to $(INSTALL_DIR)"
 	@echo "  make run      - install, then launch the app"
 	@echo "  make demo     - run the visual harness (swift run $(APP_NAME) --demo)"
 	@echo "  make logs     - stream this app's unified logs"
 	@echo "  make hooks    - print the optional tmux hook snippet"
-	@echo "  make clean    - remove .build"
+	@echo "  make clean    - remove .build and $(DIST_DIR)"
 
 build:
 	swift build -c release
+
+build-universal:
+	@echo "==> Building $(ARM64_TRIPLE)"
+	swift build -c release --triple $(ARM64_TRIPLE)
+	@echo "==> Building $(X86_64_TRIPLE)"
+	swift build -c release --triple $(X86_64_TRIPLE)
+	@echo "==> Merging slices into $(UNIVERSAL_BIN)"
+	mkdir -p $(dir $(UNIVERSAL_BIN))
+	lipo -create -output $(UNIVERSAL_BIN) \
+		.build/arm64-apple-macosx/release/$(APP_NAME) \
+		.build/x86_64-apple-macosx/release/$(APP_NAME)
+	lipo -info $(UNIVERSAL_BIN)
 
 # On a CommandLineTools-only toolchain (no full Xcode), SwiftPM does not
 # wire up search paths for swift-testing even though it ships in
@@ -63,14 +120,19 @@ test:
 cert:
 	scripts/make-cert.sh
 
-bundle: build
-	@echo "==> Assembling $(APP_BUNDLE)"
+bundle: $(BUNDLE_DEPS)
+	@echo "==> Assembling $(APP_BUNDLE) (version $(VERSION), build $(BUILD_NUMBER))"
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS"
 	mkdir -p "$(APP_BUNDLE)/Contents/Resources"
-	cp "$(BUILD_DIR)/$(APP_NAME)" "$(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)"
+	cp "$(APP_BINARY)" "$(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)"
 	cp Resources/Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
 	printf 'APPL????' > "$(APP_BUNDLE)/Contents/PkgInfo"
+	# Stamp the version into the COPY, never back into Resources/Info.plist:
+	# the checked-in plist stays the single source of the default, and a
+	# release build must not leave the working tree dirty.
+	/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(VERSION)" "$(APP_BUNDLE)/Contents/Info.plist"
+	/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(BUILD_NUMBER)" "$(APP_BUNDLE)/Contents/Info.plist"
 	@echo "==> Bundle assembled at $(APP_BUNDLE)"
 
 # NOTE: the identity check deliberately omits `-v` (valid/trusted only).
@@ -84,7 +146,7 @@ sign: bundle
 		echo "!! Run 'make cert' first to create a stable self-signed identity."; \
 		exit 1; \
 	fi
-	codesign --force --deep --options runtime --sign "$(SIGN_IDENTITY)" --identifier $(BUNDLE_ID) "$(APP_BUNDLE)"
+	codesign --force --deep --options runtime $(CODESIGN_TIMESTAMP) --sign "$(SIGN_IDENTITY)" --identifier $(BUNDLE_ID) "$(APP_BUNDLE)"
 	@echo "==> Checking the signature is certificate-anchored, not ad-hoc..."
 	@if codesign -dvvv "$(APP_BUNDLE)" 2>&1 | grep -q '^Signature=adhoc'; then \
 		echo ""; \
@@ -97,6 +159,28 @@ sign: bundle
 	@echo "==> Designated requirement:"
 	@codesign -d --requirements - "$(APP_BUNDLE)" 2>&1 | grep designated || true
 	codesign -dvvv "$(APP_BUNDLE)"
+
+# Packages whatever is currently in $(APP_BUNDLE) -- it does NOT depend on
+# `sign`, because the release pipeline has to notarize and staple the .app in
+# between signing it and putting it in the image (a stapled ticket lets the app
+# validate offline once it's dragged out of the .dmg). For a local one-shot
+# image where none of that applies, chain them yourself: `make sign dmg`.
+dmg:
+	@test -d "$(APP_BUNDLE)" || { echo "!! $(APP_BUNDLE) does not exist. Run 'make sign' first."; exit 1; }
+	@echo "==> Staging disk image contents"
+	rm -rf "$(DIST_DIR)/dmg-stage" "$(DMG)"
+	mkdir -p "$(DIST_DIR)/dmg-stage"
+	# ditto, not cp -R: it is the copy that reliably preserves the extended
+	# attributes and resource forks a signed+stapled bundle carries. cp -R
+	# can drop them and silently invalidate the signature.
+	ditto "$(APP_BUNDLE)" "$(DIST_DIR)/dmg-stage/$(APP_NAME).app"
+	# The /Applications symlink is what makes the window a drag-and-drop target.
+	ln -s /Applications "$(DIST_DIR)/dmg-stage/Applications"
+	@echo "==> Creating $(DMG)"
+	hdiutil create -volname "$(APP_NAME) $(VERSION)" \
+		-srcfolder "$(DIST_DIR)/dmg-stage" -ov -format UDZO "$(DMG)"
+	rm -rf "$(DIST_DIR)/dmg-stage"
+	@echo "==> Disk image ready at $(DMG)"
 
 install: sign
 	@echo "==> Stopping any running instance..."
@@ -136,4 +220,4 @@ hooks:
 	@echo ""
 
 clean:
-	rm -rf .build
+	rm -rf .build $(DIST_DIR)

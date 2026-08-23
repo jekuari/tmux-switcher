@@ -72,9 +72,40 @@ them and won't appear for them.
 ## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/jekuari/tmux-switcher/main/install.sh | bash
+```
+
+That downloads the latest release, builds it, signs it, and installs it to
+`/Applications`. It needs the Command Line Tools and the macOS 26 SDK to build
+(the app *runs* on macOS 14+; only building needs the newer SDK, because the
+Liquid Glass code path references a macOS 26 API behind an availability check).
+It checks for both up front and says so rather than dumping compiler errors on
+you.
+
+If piping a script into your shell makes you twitch — reasonable — read it
+first, or clone and build by hand:
+
+```sh
+git clone https://github.com/jekuari/tmux-switcher && cd tmux-switcher
 make cert      # one-time: create a stable, self-signed signing identity
 make install   # build, bundle, sign, and install to /Applications
 ```
+
+The installer takes a few environment variables: `TMUX_SWITCHER_VERSION=v0.2.0`
+pins a release, `TMUX_SWITCHER_REF=main` builds a branch, and
+`TMUX_SWITCHER_URL=...` points at an arbitrary source tarball. Release
+downloads are verified against the `SHA256SUMS` published with them; branch
+installs fall back to TLS alone, and the script says which one happened rather
+than implying an integrity check that did not occur.
+
+### Why it builds instead of downloading a binary
+
+Because a downloaded binary would not run. macOS quarantines anything fetched
+over the network, and Gatekeeper then demands a Developer ID signature plus a
+notarization ticket — both of which need a paid Apple Developer Program
+membership this project does not have. Code compiled on the machine it runs on
+is never quarantined, so Gatekeeper never gets involved. See
+[Releasing](#releasing) for the full picture.
 
 `make cert` creates a self-signed code-signing identity named
 `tmux-switcher-dev` in your login keychain. This matters more than it
@@ -102,12 +133,19 @@ make build   # swift build -c release
 make test    # swift test
 make bundle  # assemble the .app without signing/installing
 make sign    # sign the assembled bundle
+make dmg     # package the already-signed bundle as a .dmg
 make run     # install, then open the app
 make demo    # run the visual harness: swift run TmuxSwitcher --demo
 make logs    # stream this app's unified logs
 make hooks   # re-print the optional tmux hook snippet
-make clean   # remove .build
+make clean   # remove .build and dist
 ```
+
+Two variables are worth knowing about. `UNIVERSAL=1` builds arm64 and x86_64
+and `lipo`s them into one binary (off by default: it doubles compile time for
+no local benefit). `VERSION=1.2.3 BUILD_NUMBER=42` stamps those into the
+bundle's `Info.plist` copy — never back into `Resources/Info.plist`, so a
+release build leaves the working tree clean.
 
 ## Optional tmux hooks
 
@@ -135,22 +173,67 @@ already have set for the same event.)
 
 ## Configuration
 
-tmux-switcher reads `~/.config/tmux-switcher/config.env` and hot-reloads it
-on save — no restart needed. Recognized keys:
+tmux-switcher reads `~/.config/tmux-switcher/config.json` and hot-reloads it on
+save — no restart needed. The file is optional; every key is optional too, so it
+only ever needs to mention the knobs you actually want to change.
 
-| Key | Meaning |
-| --- | --- |
-| `DWELL_MS=150` | How long Meh must be held before the HUD appears. Raise it if quick Meh chords flash the HUD; `0` shows it instantly. |
-| `IDLE_HIDE_MS=2000` | Fallback for a *missed* Meh release: hides this long after the last session change, but only if the hardware says Meh is no longer held. Deliberately holding Meh to read the list keeps it up. |
-| `MAX_DISPLAY_MS=0` | Absolute cap on how long the HUD may stay up, enforced unconditionally. `0` (the default) disables it, so holding Meh keeps the HUD up indefinitely. |
-| `MODIFIER_POLL_MS=100` | Poll interval for detecting whether Meh is still held. |
-| `MAX_RADIUS=4` | Maximum number of sessions shown on either side of the current one. |
-| `TMUX_BIN` | Path to the `tmux` binary to invoke, if not the one on `PATH`. |
-| `GHOSTTY_BUNDLE_ID` | Bundle identifier used to detect that Ghostty is the focused app. |
-| `SHOW_DIRECTION_HINTS` | Whether to show up/down direction indicators in the HUD. |
-| `ANIMATE` | Whether HUD show/hide transitions are animated. |
-| `SCROLL_ANIMATION_MS=200` | Duration of the one-row slide when the session changes. `0` makes it instant. |
-| `USE_LIQUID_GLASS=1` | Use macOS 26 Liquid Glass for the pills. Set `0` for plain translucent capsules. |
+```jsonc
+{
+  // Raise this if quick Meh chords flash the HUD.
+  "dwellMs": 250,
+  "maxRadius": 6,
+  "tmuxBin": "/opt/homebrew/bin/tmux"
+}
+```
+
+Parsing is JSON5-tolerant: `//` and `/* */` comments, trailing commas and
+unquoted keys are all accepted. Plain JSON has no comment syntax, which would
+have made it a strictly worse format than the `KEY=value` file it replaced for
+something whose whole purpose is to be hand-edited and annotated.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `dwellMs` | int | `150` | How long Meh must be held before the HUD appears. Raise it if quick Meh chords flash the HUD; `0` shows it instantly. |
+| `idleHideMs` | int | `2000` | Fallback for a *missed* Meh release: hides this long after the last session change, but only if the hardware says Meh is no longer held. Deliberately holding Meh to read the list keeps it up. |
+| `maxDisplayMs` | int | `0` | Absolute cap on how long the HUD may stay up, enforced unconditionally. `0` disables it, so holding Meh keeps the HUD up indefinitely. |
+| `modifierPollMs` | int | `100` | Poll interval for detecting whether Meh is still held. |
+| `maxRadius` | int | `4` | Maximum number of sessions shown on either side of the current one. |
+| `tmuxBin` | string | `/opt/homebrew/bin/tmux` | Path to the `tmux` binary to invoke. |
+| `ghosttyBundleID` | string | `com.mitchellh.ghostty` | Bundle identifier used to detect that Ghostty is the focused app. |
+| `showDirectionHints` | bool | `true` | Whether to show up/down direction indicators in the HUD. |
+| `animate` | bool | `true` | Whether HUD show/hide transitions are animated. |
+| `scrollAnimationMs` | int | `200` | Duration of the one-row slide when the session changes. `0` makes it instant. |
+| `useLiquidGlass` | bool | `true` | Use macOS 26 Liquid Glass for the pills. `false` gives plain translucent capsules. |
+
+Durations clamp at `0` and `maxRadius` clamps at `1`, since a zero radius would
+render a HUD with no rows in it. Unknown keys are ignored, so a config written
+for a newer build will not break an older binary.
+
+### On invalid config
+
+A JSON document is parsed as a whole, so a single typo invalidates the entire
+file — unlike the old `KEY=value` format, where a bad line could just be
+skipped. Silently falling back to defaults would therefore mean silently
+discarding *every* setting over one misplaced comma, so instead:
+
+- **At startup**, a broken file logs an error naming the offending key and the
+  app runs on defaults. It never refuses to launch — a background agent that
+  silently fails to appear is much harder to diagnose than one running on
+  defaults.
+- **On hot-reload**, a broken file is ignored and the config already in effect
+  is kept. Editors save mid-keystroke often enough that a briefly invalid file
+  is normal; reverting every setting on the way past would be worse than
+  waiting for the next save.
+
+Either way the reason lands in `make logs`. `TmuxSwitcher --probe-tmux` also
+reports it, since "the HUD shows nothing" and "my config has a typo" are the
+same symptom from the outside.
+
+> **Upgrading?** The format changed from `config.env` (`KEY=value`, uppercase
+> keys) to `config.json` (camelCase keys). Nothing reads `config.env` any more.
+> If one is still sitting there with no `config.json` beside it, the app logs a
+> warning at startup rather than appearing to ignore settings you believe are in
+> effect. Port it by hand — `DWELL_MS=250` becomes `"dwellMs": 250`.
 
 ## Troubleshooting
 
@@ -171,16 +254,69 @@ without `make sign`/`make install` (or `make cert` was never run) — redo
 
 **tmux-switcher isn't reflecting session changes.**
 Confirm the optional tmux hooks are installed (`make hooks` reprints them),
-and that `TMUX_BIN` in your config points at the same `tmux` your shell
+and that `tmuxBin` in your config points at the same `tmux` your shell
 uses. Remember: the app only ever calls `tmux list-sessions` — it never
 creates, kills, or renames sessions, so it cannot be the cause of any
 session-state change itself.
 
 **No signing identity found / `make sign` refuses to run.**
-Run `make cert`. If it reports that non-interactive trust could not be
-established, follow the manual Keychain Access steps it prints (Keychain
-Access → login keychain → My Certificates → `tmux-switcher-dev` → Trust →
-Code Signing → Always Trust).
+Run `make cert`. If it says trust could not be established non-interactively,
+ignore it — that is a note, not a failure. Trust only affects Gatekeeper
+assessment (`spctl`), which never runs on locally built code because locally
+built code is never quarantined. The designated requirement that actually
+protects your Accessibility grant is a hash comparison against the leaf
+certificate and never walks a trust chain. What matters is that the identity
+exists at all, which is what both `make cert` and `make sign` check.
+
+## Releasing
+
+Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
+which tests, builds a universal bundle, and publishes a GitHub Release.
+
+What that release contains depends on whether Developer ID credentials are
+configured as repository secrets, and the reason is worth spelling out, because
+it is the one thing about macOS distribution that catches people out.
+
+**The self-signed `tmux-switcher-dev` identity only works on the machine that
+created it.** `scripts/make-cert.sh` finishes with `security add-trusted-cert`,
+which tells *your* login keychain to trust that root. The certificate travels
+inside the `.app`; that trust decision does not.
+
+That alone is survivable — but two separate mechanisms are in play, and they
+fail differently:
+
+- **Gatekeeper** only inspects *quarantined* code. Anything a browser downloads
+  gets the `com.apple.quarantine` attribute, and macOS then demands a Developer
+  ID signature *plus* a notarization ticket before it will launch. A self-signed
+  build has neither. Since macOS 15 the Control-click → Open escape hatch is
+  gone, so the user has to dig through System Settings → Privacy & Security to
+  approve it — a miserable first run for an `LSUIElement` agent that shows no
+  window either way. A locally compiled build is never quarantined, which is
+  precisely why `make install` works and a downloaded build would not.
+- **TCC / Accessibility** is indifferent to trust. The designated requirement
+  this project is careful to keep stable is a hash comparison against the leaf
+  certificate; it never validates the chain. So the grant-survives-rebuild
+  property holds on any machine.
+
+So the pipeline never publishes an unsigned `.app`. Without credentials it
+publishes a **source tarball** and points users at `make cert && make install`.
+With credentials it additionally publishes a **Developer ID-signed,
+Apple-notarized `.dmg`** that opens with no warning.
+
+To turn the signed path on, enroll in the Apple Developer Program ($99/year)
+and add five repository secrets — `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`,
+`NOTARY_KEY_P8`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`. The workflow header
+documents exactly how to produce each one. Nothing else changes; the next tag
+picks them up.
+
+> ⚠️ The first signed release revokes every existing user's Accessibility
+> grant, exactly once. Switching from `tmux-switcher-dev` to a Developer ID
+> certificate changes the app's designated requirement, and a changed DR is
+> indistinguishable from a different app as far as TCC is concerned. It does
+> not recur on later updates.
+
+`workflow_dispatch` runs the same job as a dry run: it builds everything and
+uploads the results as workflow artifacts without creating a release.
 
 ## License
 
