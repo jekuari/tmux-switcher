@@ -55,7 +55,7 @@ else
 CODESIGN_TIMESTAMP := --timestamp=none
 endif
 
-.PHONY: help build build-universal test cert bundle sign dmg install run demo logs hooks clean
+.PHONY: help build build-universal test cert icon bundle sign dmg install run demo logs hooks clean
 
 .DEFAULT_GOAL := help
 
@@ -65,6 +65,7 @@ help:
 	@echo "  make build-universal - build arm64 + x86_64 and lipo them together"
 	@echo "  make test     - swift test"
 	@echo "  make cert     - create/verify the tmux-switcher-dev signing identity"
+	@echo "  make icon     - regenerate Resources/AppIcon.icns"
 	@echo "  make bundle   - assemble $(APP_BUNDLE)"
 	@echo "  make sign     - codesign the app bundle with a stable identity"
 	@echo "  make dmg      - package the ALREADY-SIGNED bundle as a .dmg"
@@ -120,6 +121,16 @@ test:
 cert:
 	scripts/make-cert.sh
 
+# Regenerates Resources/AppIcon.icns from scripts/make-icon.swift. The .icns
+# is committed, so this only needs running when the artwork itself changes.
+icon:
+	rm -rf $(DIST_DIR)/AppIcon.iconset
+	mkdir -p $(DIST_DIR)
+	swift scripts/make-icon.swift $(DIST_DIR)/AppIcon.iconset
+	iconutil -c icns $(DIST_DIR)/AppIcon.iconset -o Resources/AppIcon.icns
+	rm -rf $(DIST_DIR)/AppIcon.iconset
+	@echo "==> Wrote Resources/AppIcon.icns"
+
 bundle: $(BUNDLE_DEPS)
 	@echo "==> Assembling $(APP_BUNDLE) (version $(VERSION), build $(BUILD_NUMBER))"
 	rm -rf "$(APP_BUNDLE)"
@@ -127,6 +138,7 @@ bundle: $(BUNDLE_DEPS)
 	mkdir -p "$(APP_BUNDLE)/Contents/Resources"
 	cp "$(APP_BINARY)" "$(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)"
 	cp Resources/Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
+	cp Resources/AppIcon.icns "$(APP_BUNDLE)/Contents/Resources/AppIcon.icns"
 	printf 'APPL????' > "$(APP_BUNDLE)/Contents/PkgInfo"
 	# Stamp the version into the COPY, never back into Resources/Info.plist:
 	# the checked-in plist stays the single source of the default, and a

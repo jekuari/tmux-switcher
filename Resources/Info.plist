@@ -10,6 +10,15 @@
     <string>TmuxSwitcher</string>
     <key>CFBundleIdentifier</key>
     <string>com.rferegrino.tmux-switcher</string>
+    <!--
+      Present despite this being an LSUIElement agent with no Dock tile: the
+      app is still listed, with its icon, under Login Items and under
+      Privacy & Security > Accessibility, which every user must visit to grant
+      the one permission the app cannot work without. Without this key those
+      lists show a blank generic placeholder.
+    -->
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
