@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>TmuxSwitcher</string>
+    <key>CFBundleDisplayName</key>
+    <string>TmuxSwitcher</string>
+    <key>CFBundleExecutable</key>
+    <string>TmuxSwitcher</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.rferegrino.tmux-switcher</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <!-- Essential: keeps this agent out of the Dock and the Cmd+Tab app switcher. -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>tmux-switcher</string>
+    <!--
+      No entitlements file and no App Sandbox keys here on purpose.
+      Sandboxing would block both the Accessibility APIs this app relies on
+      and its ability to spawn the `tmux` subprocess to list sessions.
+    -->
+</dict>
+</plist>
