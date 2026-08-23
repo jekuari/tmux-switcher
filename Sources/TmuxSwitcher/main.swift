@@ -7,6 +7,13 @@ setvbuf(stdout, nil, _IOLBF, 0)
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 
+// Read the version from the bundle rather than hardcoding it. `make bundle`
+// stamps VERSION into the bundle's Info.plist at build time, so a literal here
+// would silently disagree with the release it actually shipped in -- which it
+// already did once, reporting 0.1.0 from a 0.1.1 build. Falls back to "dev"
+// under `swift run`, where there is no bundle Info.plist to read.
+let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+
 // --- One-shot notify mode -----------------------------------------------------
 // This path runs from a tmux hook on every session create/close/rename. It must be
 // fast, silent, and ALWAYS exit 0: a non-zero exit or stray output from a hook is
@@ -43,7 +50,7 @@ if arguments.contains("--probe-tmux") {
 }
 
 if arguments.contains("--version") {
-    print("tmux-switcher 0.1.0")
+    print("tmux-switcher \(appVersion)")
     exit(0)
 }
 
