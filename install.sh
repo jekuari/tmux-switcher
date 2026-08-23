@@ -27,6 +27,10 @@
 #   TMUX_SWITCHER_REF       Install a branch or commit instead of a release.
 #   TMUX_SWITCHER_URL       Install from an arbitrary source tarball URL, for
 #                           forks and mirrors. Skips the checksum lookup.
+#   TMUX_SWITCHER_INSTALL_DIR
+#                           Where to install the .app. Defaults to
+#                           /Applications, falling back to ~/Applications
+#                           automatically when /Applications is not writable.
 #
 # Everything is wrapped in main() and invoked on the very last line, so a
 # truncated download cannot execute a half-read script.
@@ -36,7 +40,7 @@ set -euo pipefail
 REPO="jekuari/tmux-switcher"
 APP_NAME="TmuxSwitcher"
 IDENTITY="tmux-switcher-dev"
-INSTALL_DIR="/Applications"
+INSTALL_DIR="${TMUX_SWITCHER_INSTALL_DIR:-/Applications}"
 MIN_MACOS_MAJOR=14
 REQUIRED_SDK_MAJOR=26
 
@@ -109,6 +113,38 @@ check_tmux() {
     # already exist, but installing it with no tmux at all is almost certainly
     # not what someone meant to do.
     command -v tmux > /dev/null 2>&1 || warn "tmux was not found on PATH. tmux-switcher will install, but it has nothing to visualize until tmux is installed and configured (see the README)."
+}
+
+# Picks where the app lands. On a managed machine /Applications typically
+# needs elevated privileges, so rather than failing -- or asking a piped-into-
+# bash script to prompt for a sudo password -- this falls back to
+# ~/Applications, which needs none. macOS treats that as a first-class app
+# location: Login Items, the Privacy & Security > Accessibility list and
+# LaunchServices all handle it identically, which is the whole reason the
+# fallback is safe rather than a compromise.
+resolve_install_dir() {
+    if [ -n "${TMUX_SWITCHER_INSTALL_DIR:-}" ]; then
+        if ! mkdir -p "${INSTALL_DIR}" 2>/dev/null; then
+            die "Cannot create ${INSTALL_DIR} (from TMUX_SWITCHER_INSTALL_DIR)."
+        fi
+        log "Installing to ${INSTALL_DIR} (set via TMUX_SWITCHER_INSTALL_DIR)"
+        return
+    fi
+
+    if [ -d "${INSTALL_DIR}" ] && [ -w "${INSTALL_DIR}" ]; then
+        log "Installing to ${INSTALL_DIR}"
+        return
+    fi
+
+    local fallback="${HOME}/Applications"
+    warn "${INSTALL_DIR} is not writable by $(id -un), so installing there would need sudo."
+    warn "Falling back to ${fallback}, which does not."
+    warn "macOS treats ~/Applications as a first-class location -- Login Items and the"
+    warn "Accessibility list will show the app exactly the same way."
+    warn "To install to ${INSTALL_DIR} anyway, use a checkout and elevate only the copy:"
+    warn "    make install SUDO=sudo"
+    INSTALL_DIR="${fallback}"
+    mkdir -p "${INSTALL_DIR}" || die "Could not create ${INSTALL_DIR}."
 }
 
 # ---------------------------------------------------------------- source
@@ -239,7 +275,7 @@ ensure_identity() {
 
 build_and_install() {
     local version="$1"
-    local -a make_args=(-C "${WORKDIR}/src" install)
+    local -a make_args=(-C "${WORKDIR}/src" install "INSTALL_DIR=${INSTALL_DIR}")
     [ -n "${version}" ] && make_args+=("VERSION=${version}")
 
     log "Building and installing to ${INSTALL_DIR} (this takes a minute)"
@@ -290,7 +326,7 @@ ${BOLD}2. Make sure tmux sets the window title to the session name${RESET}
 
 ${BOLD}3. Launch it${RESET}
 
-     open -a ${APP_NAME}
+     open "${INSTALL_DIR}/${APP_NAME}.app"
 
    To start it automatically at login, add it under
    System Settings > General > Login Items.
@@ -312,6 +348,7 @@ main() {
     check_platform
     check_toolchain
     check_tmux
+    resolve_install_dir
 
     WORKDIR="$(mktemp -d)"
     trap cleanup EXIT

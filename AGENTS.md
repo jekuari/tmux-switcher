@@ -48,6 +48,15 @@ full Xcode, so it fails outright under CommandLineTools. `make build-universal`
 builds each triple separately and `lipo`s the slices together, which works on
 both.
 
+`INSTALL_DIR` chooses where the app lands (`/Applications` by default);
+`install.sh` falls back to `~/Applications` automatically when the default is
+not writable, which macOS treats identically for Login Items, the Accessibility
+list and LaunchServices. **Never suggest `sudo make install`** — it would build
+and codesign as root, and the signing identity lives in the user's login
+keychain, so it fails outright. `make install SUDO=sudo` elevates only the copy.
+The `hooks` snippet is derived from `INSTALL_DIR`, so it stays correct for any
+prefix; it used to be hardcoded to `/Applications` and silently wrong.
+
 `make install` runs `pkill -x TmuxSwitcher` and does **not** relaunch. If you
 install during a task, the user's HUD is now dead until someone runs
 `open -a TmuxSwitcher`. Use `make run` if you want it back up.

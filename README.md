@@ -92,11 +92,38 @@ make install   # build, bundle, sign, and install to /Applications
 ```
 
 The installer takes a few environment variables: `TMUX_SWITCHER_VERSION=v0.2.0`
-pins a release, `TMUX_SWITCHER_REF=main` builds a branch, and
-`TMUX_SWITCHER_URL=...` points at an arbitrary source tarball. Release
+pins a release, `TMUX_SWITCHER_REF=main` builds a branch,
+`TMUX_SWITCHER_URL=...` points at an arbitrary source tarball, and
+`TMUX_SWITCHER_INSTALL_DIR=...` chooses where the app lands. Release
 downloads are verified against the `SHA256SUMS` published with them; branch
 installs fall back to TLS alone, and the script says which one happened rather
 than implying an integrity check that did not occur.
+
+### Installing without admin rights
+
+On a machine where `/Applications` needs elevated privileges, the installer
+does not fail and does not try to prompt for a password — it falls back to
+`~/Applications` and says so. That is not a compromise: macOS treats
+`~/Applications` as a first-class app location, and Login Items, the
+Privacy & Security → Accessibility list and LaunchServices all handle it
+identically. Force it explicitly with:
+
+```sh
+TMUX_SWITCHER_INSTALL_DIR=~/Applications \
+  curl -fsSL https://raw.githubusercontent.com/jekuari/tmux-switcher/main/install.sh | bash
+```
+
+If you specifically need it in `/Applications` on such a machine, use a
+checkout and elevate **only the copy**:
+
+```sh
+make install SUDO=sudo
+```
+
+Do not run `sudo make install`. That builds and signs as root, and the
+`tmux-switcher-dev` identity lives in *your* login keychain, not root's — so
+signing fails outright. `SUDO=sudo` exists precisely to keep the build and the
+signature unprivileged while elevating just the install step.
 
 ### Why it builds instead of downloading a binary
 
