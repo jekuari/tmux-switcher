@@ -15,6 +15,60 @@ global key state and to know which window is focused, and it needs to spawn
 `tmux` as a subprocess. App Sandbox would block both, so there is no
 entitlements file and no sandbox keys in `Resources/Info.plist`.
 
+## What this expects from your setup
+
+tmux-switcher is a **visualizer, not a switcher**. It assumes you already have
+session switching bound to a key chord, and it draws a picture of where those
+bindings lead. It will never create, change, or invoke a binding for you — the
+only tmux command it ever runs is `list-sessions`.
+
+Two pieces of tmux configuration are load-bearing.
+
+### 1. The window title must be the session name
+
+```tmux
+set -g set-titles on
+set -g set-titles-string "#S"
+```
+
+This is how the app knows which session you are on: it reads the focused
+Ghostty window's title through the Accessibility API rather than asking tmux.
+It is also what makes the HUD track your switches instantly — macOS posts a
+title-change notification the moment the title changes, so the display updates
+from an authoritative push instead of polling or guessing.
+
+**Without this the HUD simply never appears.** The title won't match any
+session name, and the app deliberately shows nothing rather than displaying a
+list it can't anchor to your current position.
+
+### 2. Session switching bound to `switch-client -n` / `-p`
+
+The bindings this was built around:
+
+```tmux
+bind -n C-M-S-j switch-client -n   # next session
+bind -n C-M-S-k switch-client -p   # previous session
+```
+
+Any keys work so long as they sit on the Meh layer (Ctrl+Alt+Shift, no Cmd) and
+drive `switch-client -n`/`-p`. The app watches for the Meh modifier itself; the
+`j`/`k` keys are entirely tmux's business.
+
+The order the HUD lists sessions in is not a guess — it is the same order tmux
+cycles them. In tmux 3.6, `switch-client -n/-p` and `list-sessions` both go
+through `sort_get_sessions()`, and with no `-O` flag that leaves the list in
+`RB_FOREACH` order, which is `strcmp` by session name. So the app consumes
+`list-sessions` output positionally and never re-sorts it.
+
+> ⚠️ Adding `-O` or `-r` to your `switch-client` bindings changes that cycle
+> order and the HUD will quietly disagree with where the keys actually take you.
+
+### What it does not do
+
+It only visualizes **session** switching. Window and pane navigation (`Meh+h`
+/`Meh+l`, pane selection, resizing) are untouched — the HUD has no opinion about
+them and won't appear for them.
+
 ## Install
 
 ```sh
