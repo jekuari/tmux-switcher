@@ -72,9 +72,40 @@ them and won't appear for them.
 ## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/jekuari/tmux-switcher/main/install.sh | bash
+```
+
+That downloads the latest release, builds it, signs it, and installs it to
+`/Applications`. It needs the Command Line Tools and the macOS 26 SDK to build
+(the app *runs* on macOS 14+; only building needs the newer SDK, because the
+Liquid Glass code path references a macOS 26 API behind an availability check).
+It checks for both up front and says so rather than dumping compiler errors on
+you.
+
+If piping a script into your shell makes you twitch — reasonable — read it
+first, or clone and build by hand:
+
+```sh
+git clone https://github.com/jekuari/tmux-switcher && cd tmux-switcher
 make cert      # one-time: create a stable, self-signed signing identity
 make install   # build, bundle, sign, and install to /Applications
 ```
+
+The installer takes a few environment variables: `TMUX_SWITCHER_VERSION=v0.2.0`
+pins a release, `TMUX_SWITCHER_REF=main` builds a branch, and
+`TMUX_SWITCHER_URL=...` points at an arbitrary source tarball. Release
+downloads are verified against the `SHA256SUMS` published with them; branch
+installs fall back to TLS alone, and the script says which one happened rather
+than implying an integrity check that did not occur.
+
+### Why it builds instead of downloading a binary
+
+Because a downloaded binary would not run. macOS quarantines anything fetched
+over the network, and Gatekeeper then demands a Developer ID signature plus a
+notarization ticket — both of which need a paid Apple Developer Program
+membership this project does not have. Code compiled on the machine it runs on
+is never quarantined, so Gatekeeper never gets involved. See
+[Releasing](#releasing) for the full picture.
 
 `make cert` creates a self-signed code-signing identity named
 `tmux-switcher-dev` in your login keychain. This matters more than it

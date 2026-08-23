@@ -275,13 +275,23 @@ jobs:
             "$SRC" > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
 
+      # install.sh fetches this alongside the tarball and refuses to build on a
+      # mismatch, so a release download is verified rather than trusted to TLS
+      # alone. Written last so it covers every asset that ended up being built.
+      - name: Publish checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          shasum -a 256 ./*.tar.gz ./*.dmg 2>/dev/null | sed 's|\./||' > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Create GitHub release
         if: steps.version.outputs.is_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          ASSETS=("dist/${{ steps.tarball.outputs.name }}")
+          ASSETS=("dist/${{ steps.tarball.outputs.name }}" "dist/SHA256SUMS")
           if [ "${{ steps.gate.outputs.signing }}" = "true" ]; then
             ASSETS+=("dist/TmuxSwitcher-${{ steps.version.outputs.version }}.dmg")
           fi
