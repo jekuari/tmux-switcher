@@ -9,10 +9,15 @@
 APP_NAME      := TmuxSwitcher
 BUNDLE_ID     := com.rferegrino.tmux-switcher
 SIGN_IDENTITY ?= tmux-switcher-dev
-# Override to install somewhere that does not need elevated privileges, e.g.
-# `make install INSTALL_DIR=~/Applications`. ~/Applications is a first-class
-# location on macOS: Login Items, the Accessibility list and LaunchServices
-# all treat it the same as /Applications.
+# Where the app is installed. /Applications makes it available to every user
+# of the Mac; ~/Applications installs it for the current user only:
+#
+#   make install INSTALL_DIR=~/Applications
+#
+# A per-user install is a first-class location on macOS -- Login Items, the
+# Accessibility list and LaunchServices all treat it the same as /Applications
+# -- and, because it lives in your own home directory, it also needs no admin
+# rights to write to.
 INSTALL_DIR   ?= /Applications
 
 # Prefix for the privileged steps of `install` -- and ONLY those steps.
@@ -84,7 +89,7 @@ help:
 	@echo "  make dmg      - package the ALREADY-SIGNED bundle as a .dmg"
 	@echo "                  (for a one-shot local disk image: make sign dmg)"
 	@echo "  make install  - sign, then install to $(INSTALL_DIR)"
-	@echo "                  (INSTALL_DIR=~/Applications for a no-sudo install;"
+	@echo "                  (INSTALL_DIR=~/Applications installs for you only;"
 	@echo "                   SUDO=sudo to elevate only the copy, not the build)"
 	@echo "  make run      - install, then launch the app"
 	@echo "  make demo     - run the visual harness (swift run $(APP_NAME) --demo)"
