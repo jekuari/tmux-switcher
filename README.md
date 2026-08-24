@@ -1,19 +1,83 @@
 # tmux-switcher
 
-A small background agent for macOS that shows a read-only HUD over
-[Ghostty](https://ghostty.org) listing which tmux session `Meh+j` / `Meh+k`
-will move you to. ("Meh" = Ctrl+Alt+Shift held together, without Cmd.)
+**Switch between tmux sessions without losing your place.** tmux-switcher is a
+small macOS heads-up display that shows — right where you're already looking —
+which session your next-session / previous-session keys will jump to.
 
-It runs as an `LSUIElement` app: no Dock icon, no menu bar item, no app
-switcher entry. Hold Meh and tap `j`/`k` to preview the session you'd land on
-before you commit to switching; release to dismiss the HUD. The app never
-switches sessions or drives tmux itself — it only ever runs `tmux
-list-sessions` to know what to display.
+<p align="center">
+  <img src="docs/screenshot.png" alt="The tmux-switcher HUD: a vertical stack of session-name pills with the current session highlighted, and up/down arrows showing which way the keys move." width="200">
+</p>
 
-It is unsandboxed by necessity: it needs the Accessibility API to observe
-global key state and to know which window is focused, and it needs to spawn
+## Why
+
+If you keep one tmux session per project or task, jumping between them is
+constant — and normally, to see what's there or land on the right one, you stop
+and open tmux's session list (`prefix` + `s`), read it, pick, and return. That's
+a context switch every single time, and it pulls your eyes and attention off
+the work.
+
+tmux-switcher removes that step. Hold the modifier and the sessions appear as a
+compact stack over your terminal, current one highlighted, with the next and
+previous sessions right above and below — so a `next`/`previous` tap is a glance
+and a keypress, never a menu. You keep your hands on the keys and your attention
+on the code. Over a day of hopping between workstreams, skipping the
+open-the-menu-read-it-choose loop each time adds up.
+
+It's a **read-only** visualizer: it shows you where your keys lead and never
+drives tmux itself. The only tmux command it ever runs is `list-sessions`.
+
+## How it looks and feels
+
+Bound to the "Meh" layer (Ctrl+Alt+Shift, no Cmd) with `Meh+j` / `Meh+k` for
+next / previous session, the loop is: hold **Meh**, tap `j`/`k` to preview the
+session you'd land on, release to dismiss. The HUD tracks each switch instantly.
+
+It runs as an `LSUIElement` background app — no Dock icon, no menu bar item, no
+app-switcher entry — so it stays out of your way until you hold the modifier.
+
+It is unsandboxed by necessity: it needs the Accessibility API to observe the
+modifier key state and to know which window is focused, and it needs to spawn
 `tmux` as a subprocess. App Sandbox would block both, so there is no
-entitlements file and no sandbox keys in `Resources/Info.plist`.
+entitlements file and no sandbox keys in `Resources/Info.plist`. See
+[What it does and doesn't touch](#what-it-does-and-doesnt-touch) for exactly
+what that permission is used for.
+
+## What it does and doesn't touch
+
+tmux-switcher is unsandboxed and requests Accessibility, so it's fair to ask
+exactly what it does with that. Everything below is verifiable in the source —
+the relevant files are small and linked.
+
+**Accessibility is used for two narrow, read-only things:**
+
+- Reading the **title of the focused window** to know which session you're on
+  (paired with the `set-titles` config below).
+- Detecting when the **Meh modifier is held**, to know when to show the HUD.
+  It watches modifier-flag *state* only
+  ([`ModifierWatcher.swift`](Sources/TmuxSwitcher/ModifierWatcher.swift)) via
+  `NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged)` — it does **not**
+  install a keyboard event tap, log keystrokes, capture typed text, read other
+  applications' contents, or record the screen. It deliberately avoids the
+  separate "Input Monitoring" permission for exactly this reason.
+
+**It runs exactly one external command**
+([`TmuxClient.swift`](Sources/TmuxSwitcherCore/TmuxClient.swift)):
+`tmux list-sessions -F "#{session_name}"`, with fixed arguments and no shell.
+It never switches, creates, renames, or kills sessions, and never writes to
+your tmux config.
+
+**It makes no network connections.** There is no HTTP, no telemetry, no
+analytics — the app contains no networking code at all. Its only IPC is a
+**local `AF_UNIX` socket** at `~/.config/tmux-switcher/notify.sock`
+([`NotifyServer.swift`](Sources/TmuxSwitcher/NotifyServer.swift)), which an
+optional local tmux hook can poke to nudge the session-list cache. Nothing
+leaves the machine.
+
+**The only files it touches** are under `~/.config/tmux-switcher/`: it reads
+`config.json` if present and creates that directory and the local socket. It
+writes nothing elsewhere.
+
+It's open source and MIT-licensed, so every claim here can be checked directly.
 
 ## What this expects from your setup
 
