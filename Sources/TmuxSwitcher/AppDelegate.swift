@@ -203,7 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// without holding Meh. Renders the real panel over the real window, which a
     /// static preview canvas could not do.
     private func runDemo(sessionCount: Int) {
-        let names = ["Dotfiles", "omniwm", "tmux", "vigia", "notes", "scratch", "api", "web", "infra"]
+        let names = ["dotfiles", "server", "tmux", "api", "notes", "scratch", "web", "infra", "docs"]
         let sessions = Array(names.prefix(max(0, sessionCount)))
         let current = sessions.isEmpty ? 0 : min(1, sessions.count - 1)
 
