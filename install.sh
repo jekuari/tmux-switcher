@@ -28,9 +28,12 @@
 #   TMUX_SWITCHER_URL       Install from an arbitrary source tarball URL, for
 #                           forks and mirrors. Skips the checksum lookup.
 #   TMUX_SWITCHER_INSTALL_DIR
-#                           Where to install the .app. Defaults to
-#                           /Applications, falling back to ~/Applications
-#                           automatically when /Applications is not writable.
+#                           Where to install the .app. /Applications (the
+#                           default) makes it available to every user of the
+#                           Mac; ~/Applications installs it for the current
+#                           user only. When /Applications is not writable
+#                           without admin rights, a per-user install is chosen
+#                           automatically.
 #
 # Everything is wrapped in main() and invoked on the very last line, so a
 # truncated download cannot execute a half-read script.
@@ -115,13 +118,13 @@ check_tmux() {
     command -v tmux > /dev/null 2>&1 || warn "tmux was not found on PATH. tmux-switcher will install, but it has nothing to visualize until tmux is installed and configured (see the README)."
 }
 
-# Picks where the app lands. On a managed machine /Applications typically
-# needs elevated privileges, so rather than failing -- or asking a piped-into-
-# bash script to prompt for a sudo password -- this falls back to
-# ~/Applications, which needs none. macOS treats that as a first-class app
-# location: Login Items, the Privacy & Security > Accessibility list and
-# LaunchServices all handle it identically, which is the whole reason the
-# fallback is safe rather than a compromise.
+# Picks where the app lands: /Applications (all users of the Mac) or
+# ~/Applications (the current user only). Both are first-class app locations --
+# Login Items, the Privacy & Security > Accessibility list and LaunchServices
+# treat them identically -- so a per-user install is a real choice, not a
+# lesser one. When /Applications needs admin rights the installer does not fail
+# or prompt a piped-into-bash script for a password; it installs for the
+# current user instead, which needs none.
 resolve_install_dir() {
     if [ -n "${TMUX_SWITCHER_INSTALL_DIR:-}" ]; then
         if ! mkdir -p "${INSTALL_DIR}" 2>/dev/null; then
@@ -137,12 +140,11 @@ resolve_install_dir() {
     fi
 
     local fallback="${HOME}/Applications"
-    warn "${INSTALL_DIR} is not writable by $(id -un), so installing there would need sudo."
-    warn "Falling back to ${fallback}, which does not."
-    warn "macOS treats ~/Applications as a first-class location -- Login Items and the"
-    warn "Accessibility list will show the app exactly the same way."
-    warn "To install to ${INSTALL_DIR} anyway, use a checkout and elevate only the copy:"
-    warn "    make install SUDO=sudo"
+    log "${INSTALL_DIR} needs admin rights to write to, so installing for ${USER} only."
+    log "Using ${fallback} -- a per-user install macOS treats identically: Login Items"
+    log "and the Accessibility list show the app exactly the same way."
+    log "To install to ${INSTALL_DIR} for all users instead, use a checkout and elevate"
+    log "only the copy: make install SUDO=sudo"
     INSTALL_DIR="${fallback}"
     mkdir -p "${INSTALL_DIR}" || die "Could not create ${INSTALL_DIR}."
 }
