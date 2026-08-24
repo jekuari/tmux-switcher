@@ -77,7 +77,7 @@ leaves the machine.
 `config.json` if present and creates that directory and the local socket. It
 writes nothing elsewhere.
 
-It's open source and MIT-licensed, so every claim here can be checked directly.
+It's open source and MIT-licensed, so every claim here can be checked directly. For a fuller audit — verification commands, supply-chain notes, and signing details — see [SECURITY.md](SECURITY.md).
 
 ## What this expects from your setup
 
