@@ -139,102 +139,52 @@ them and won't appear for them.
 brew install jekuari/tap/tmux-switcher
 ```
 
-Alternatively:
+or
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jekuari/tmux-switcher/main/install.sh | bash
 ```
 
-Both install the same thing: a Developer ID-signed, Apple-notarized build,
-downloaded straight from the latest release (the `curl` form fetches the
-`.dmg` and copies the app out of it). Neither needs the Swift toolchain or
-the macOS 26 SDK — that's only required for building from source. Its
-signature is stable across updates, so your Accessibility grant survives
-upgrades.
+`TMUX_SWITCHER_VERSION=v0.2.0` pins a version;
+`TMUX_SWITCHER_INSTALL_DIR=~/Applications` installs just for you instead of
+every user of the Mac (see below).
 
-If piping a script into your shell makes you twitch — reasonable — read it
-first, or just grab the `.dmg` from the
-[latest release](https://github.com/jekuari/tmux-switcher/releases/latest)
-and drag the app into Applications yourself.
+After installing, grant Accessibility access:
 
-The installer takes a few environment variables: `TMUX_SWITCHER_VERSION=v0.2.0`
-pins a release, and `TMUX_SWITCHER_INSTALL_DIR=...` chooses where the app
-lands (see
-[Installing for one user vs everyone](#installing-for-one-user-vs-everyone)).
-Downloads are verified against the `SHA256SUMS` published with the release.
+1. Open **System Settings → Privacy & Security → Accessibility**.
+2. Enable **TmuxSwitcher**.
 
-Want to build it yourself instead — no signed release published yet, an
-unreleased branch, or you're contributing? See
+To build from source instead, see
 [Building from source](#building-from-source).
 
 ### Installing for one user vs everyone
 
-`/Applications` installs tmux-switcher for **every user** of the Mac.
-`~/Applications` installs it for **you only**. Both are equally valid — macOS
-treats a per-user install as a first-class app location, and Login Items, the
-Privacy & Security → Accessibility list and LaunchServices all show it exactly
-the same way. A per-user install is the natural choice for a personal developer
-tool, and since it lives in your own home directory it also needs no admin
-rights. Choose it explicitly with:
+`/Applications` installs tmux-switcher for **every user** of the Mac;
+`~/Applications` installs it for **you only** and needs no admin rights:
 
 ```sh
 TMUX_SWITCHER_INSTALL_DIR=~/Applications \
   curl -fsSL https://raw.githubusercontent.com/jekuari/tmux-switcher/main/install.sh | bash
 ```
 
-If `/Applications` isn't writable without admin rights, the installer picks the
-per-user location on its own rather than failing or prompting for a password.
-
-To install into `/Applications` for all users on a machine where that needs
-admin rights, use a checkout and elevate **only the copy**:
-
-```sh
-make install SUDO=sudo
-```
-
-Do not run `sudo make install`. That builds and signs as root, and the
-`tmux-switcher-dev` identity lives in *your* login keychain, not root's — so
-signing fails outright. `SUDO=sudo` exists precisely to keep the build and the
-signature unprivileged while elevating just the install step.
-
-After installing (any method above), grant Accessibility access:
-
-1. Open **System Settings → Privacy & Security → Accessibility**.
-2. Enable **TmuxSwitcher**.
-3. You should only need to do this once, ever, as long as the app keeps
-   being signed with the same identity across updates (see Troubleshooting
-   below if it seems to have been revoked).
+If `/Applications` isn't writable, the installer falls back to
+`~/Applications` on its own. To force an all-users install from a checkout
+on a machine where that needs admin rights, use `make install SUDO=sudo`
+(not `sudo make install` — that builds and signs as root, and fails).
 
 ### Building from source
 
 ```sh
 git clone https://github.com/jekuari/tmux-switcher && cd tmux-switcher
-make cert      # one-time: create a stable, self-signed signing identity
+make cert      # one-time: create a local signing identity
 make install   # build, bundle, sign, and install to /Applications
 ```
 
-Or let `install.sh` do it for you: set `TMUX_SWITCHER_BUILD=1` and it builds
-from source instead of downloading a release, using `make cert && make
-install` under the hood. `TMUX_SWITCHER_REF=<branch>` builds a specific
-branch or commit (implies `TMUX_SWITCHER_BUILD`, since there's no release
-`.dmg` for an arbitrary ref), and `TMUX_SWITCHER_URL=...` builds from an
-arbitrary source tarball instead, for forks and mirrors. This needs the
-Command Line Tools and the macOS 26 SDK (the app *runs* on macOS 14+; only
-building needs the newer SDK, because the Liquid Glass code path references
-a macOS 26 API behind an availability check) — the installer checks for both
-up front and says so rather than dumping compiler errors on you.
-
-`make cert` creates a self-signed code-signing identity named
-`tmux-switcher-dev` in your login keychain. This matters more than it
-sounds: ad-hoc signing (`codesign -s -`) derives the app's identity from a
-hash of the binary, which changes on every rebuild — so macOS silently
-revokes the Accessibility grant every time you rebuild the app, and the HUD
-just stops showing up with no error message anywhere. A self-signed
-certificate gives a stable *designated requirement* derived from the leaf
-certificate instead, so the same TCC grant survives your own rebuilds — the
-same property the released build gets from its Developer ID certificate,
-just anchored locally instead of by Apple. `make cert` is idempotent; run it
-again any time and it will just confirm the identity is already there.
+`make cert` keeps the Accessibility grant from being revoked every time you
+rebuild. `TMUX_SWITCHER_BUILD=1` makes `install.sh` do the same thing instead
+of downloading a release; `TMUX_SWITCHER_REF=<branch>` builds a specific
+branch. Building needs the Command Line Tools and the macOS 26 SDK (the app
+*runs* on macOS 14+ — only building needs the newer SDK).
 
 Other useful targets:
 
@@ -351,20 +301,8 @@ same symptom from the outside.
 **HUD stopped appearing after a rebuild.**
 This is almost always a lost Accessibility grant. Re-add TmuxSwitcher under
 **System Settings → Privacy & Security → Accessibility** (remove and re-add
-it if simply toggling it doesn't help). Then confirm the binary is actually
-signed with a stable identity, not an ad-hoc signature:
-
-```sh
-codesign -dvvv /Applications/TmuxSwitcher.app
-```
-
-Look for `Authority=Developer ID Application: ...` (a release install) or
-`Authority=tmux-switcher-dev` (a build from source) in the output. If instead
-you see `Signature=adhoc` or no `Authority=` line at all: a release install
-should be reinstalled via `brew install jekuari/tap/tmux-switcher` or the
-`curl` installer; a from-source build was built/signed without `make
-sign`/`make install` (or `make cert` was never run) — redo
-`make cert && make install` and re-grant Accessibility once more.
+it if simply toggling it doesn't help). If you're building from source,
+make sure `make cert` has been run first.
 
 **tmux-switcher isn't reflecting session changes.**
 Confirm the optional tmux hooks are installed (`make hooks` reprints them),
@@ -374,60 +312,16 @@ creates, kills, or renames sessions, so it cannot be the cause of any
 session-state change itself.
 
 **No signing identity found / `make sign` refuses to run.**
-Run `make cert`. If it says trust could not be established non-interactively,
-ignore it — that is a note, not a failure. Trust only affects Gatekeeper
-assessment (`spctl`), which never runs on locally built code because locally
-built code is never quarantined. The designated requirement that actually
-protects your Accessibility grant is a hash comparison against the leaf
-certificate and never walks a trust chain. What matters is that the identity
-exists at all, which is what both `make cert` and `make sign` check.
+Run `make cert`.
 
 ## Releasing
 
-Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
-which tests, builds a universal bundle, and publishes a GitHub Release.
-
-What that release contains depends on whether Developer ID credentials are
-configured as repository secrets, and the reason is worth spelling out, because
-it is the one thing about macOS distribution that catches people out.
-
-**The self-signed `tmux-switcher-dev` identity only works on the machine that
-created it.** `scripts/make-cert.sh` finishes with `security add-trusted-cert`,
-which tells *your* login keychain to trust that root. The certificate travels
-inside the `.app`; that trust decision does not.
-
-That alone is survivable — but two separate mechanisms are in play, and they
-fail differently:
-
-- **Gatekeeper** only inspects *quarantined* code. Anything a browser downloads
-  gets the `com.apple.quarantine` attribute, and macOS then demands a Developer
-  ID signature *plus* a notarization ticket before it will launch. A self-signed
-  build has neither. Since macOS 15 the Control-click → Open escape hatch is
-  gone, so the user has to dig through System Settings → Privacy & Security to
-  approve it — a miserable first run for an `LSUIElement` agent that shows no
-  window either way. A locally compiled build is never quarantined, which is
-  precisely why `make install` works and a downloaded build would not.
-- **TCC / Accessibility** is indifferent to trust. The designated requirement
-  this project is careful to keep stable is a hash comparison against the leaf
-  certificate; it never validates the chain. So the grant-survives-rebuild
-  property holds on any machine.
-
-So the pipeline never publishes an unsigned `.app`. Without credentials it
-publishes a **source tarball** and points users at `make cert && make install`.
-With credentials it additionally publishes a **Developer ID-signed,
-Apple-notarized `.dmg`** that opens with no warning.
-
-To turn the signed path on, enroll in the Apple Developer Program ($99/year)
-and add five repository secrets — `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`,
-`NOTARY_KEY_P8`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`. The workflow header
-documents exactly how to produce each one. Nothing else changes; the next tag
-picks them up.
-
-> ⚠️ The first signed release revokes every existing user's Accessibility
-> grant, exactly once. Switching from `tmux-switcher-dev` to a Developer ID
-> certificate changes the app's designated requirement, and a changed DR is
-> indistinguishable from a different app as far as TCC is concerned. It does
-> not recur on later updates.
+Push a `v*` tag to run
+[`.github/workflows/release.yml`](.github/workflows/release.yml): it tests,
+builds a universal bundle, and publishes a GitHub Release, plus a signed
+`.dmg` and a bump to the [Homebrew tap](https://github.com/jekuari/homebrew-tap)
+when the repo's signing secrets are configured (see the workflow's header
+comment for setup).
 
 `workflow_dispatch` runs the same job as a dry run: it builds everything and
 uploads the results as workflow artifacts without creating a release.
