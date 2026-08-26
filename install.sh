@@ -4,28 +4,24 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/jekuari/tmux-switcher/main/install.sh | bash
 #
-# WHY BUILD FROM SOURCE RATHER THAN DOWNLOAD A BINARY:
-# macOS quarantines anything a browser or curl marks as downloaded, and
-# Gatekeeper then demands a Developer ID signature plus a notarization ticket
-# before it will launch it. tmux-switcher has neither (that needs a paid Apple
-# Developer Program membership), so a prebuilt download would be a dead end.
-# Code compiled on the machine it runs on is never quarantined, so Gatekeeper
-# never gets involved. That is the entire reason this script builds instead of
-# unpacking.
+# Installs the Developer ID-signed, Apple-notarized build from the latest
+# release: downloads the .dmg, mounts it, and copies the app out. No Swift
+# toolchain needed for this path.
 #
-# The app is then signed with a self-signed "tmux-switcher-dev" certificate.
-# That is NOT about Gatekeeper -- it is about the Accessibility permission.
-# Ad-hoc signing derives the app's identity from a hash of the binary, which
-# changes on every rebuild, so macOS silently revokes the Accessibility grant
-# each time you update. A certificate-anchored signature keeps the identity
-# stable across rebuilds, so the grant survives.
+# If no signed release is published yet — or you set TMUX_SWITCHER_BUILD=1,
+# TMUX_SWITCHER_REF, or TMUX_SWITCHER_URL — it falls back to building from
+# source instead, via `make cert && make install`. That needs the Command
+# Line Tools and the macOS 26 SDK, and produces a locally self-signed build
+# (see "Building from source" in the README for why that identity is stable
+# across your own rebuilds, even though it differs from the release build's).
 #
 # Environment variables:
 #   TMUX_SWITCHER_VERSION   Install a specific release, e.g. v0.2.0.
-#                           Defaults to the latest release, or the main branch
-#                           if the project has not tagged one yet.
-#   TMUX_SWITCHER_REF       Install a branch or commit instead of a release.
-#   TMUX_SWITCHER_URL       Install from an arbitrary source tarball URL, for
+#                           Defaults to the latest release.
+#   TMUX_SWITCHER_BUILD     Set to any value to build from source even if a
+#                           signed release is available.
+#   TMUX_SWITCHER_REF       Build a branch or commit from source instead.
+#   TMUX_SWITCHER_URL       Build from an arbitrary source tarball URL, for
 #                           forks and mirrors. Skips the checksum lookup.
 #   TMUX_SWITCHER_INSTALL_DIR
 #                           Where to install the .app. /Applications (the
@@ -42,12 +38,15 @@ set -euo pipefail
 
 REPO="jekuari/tmux-switcher"
 APP_NAME="TmuxSwitcher"
+EXEC_REL="Contents/MacOS/${APP_NAME}"
 IDENTITY="tmux-switcher-dev"
 INSTALL_DIR="${TMUX_SWITCHER_INSTALL_DIR:-/Applications}"
 MIN_MACOS_MAJOR=14
 REQUIRED_SDK_MAJOR=26
 
 WORKDIR=""
+STAGED=""
+INSTALL_METHOD=""
 
 # ---------------------------------------------------------------- output
 
@@ -80,6 +79,8 @@ check_platform() {
     log "macOS ${version}"
 }
 
+# Only needed on the build-from-source fallback — the default release
+# download needs no Swift toolchain at all.
 check_toolchain() {
     if ! xcode-select -p > /dev/null 2>&1; then
         die "No Swift toolchain found. Install the Command Line Tools first:
@@ -91,9 +92,7 @@ Then re-run this installer."
     # tmux-switcher runs on macOS 14+, but *building* it needs the macOS 26
     # SDK: OverlayView.swift references NSGlassEffectView behind an
     # #available(macOS 26.0, *) check, and a symbol behind an availability
-    # guard still has to exist in the SDK at compile time. This is the one
-    # requirement that cannot be worked around from here, so it is checked
-    # up front rather than surfacing as a wall of compiler errors.
+    # guard still has to exist in the SDK at compile time.
     local sdk major
     sdk="$(xcrun --sdk macosx --show-sdk-version 2>/dev/null || echo "0")"
     major="${sdk%%.*}"
@@ -149,6 +148,100 @@ resolve_install_dir() {
     mkdir -p "${INSTALL_DIR}" || die "Could not create ${INSTALL_DIR}."
 }
 
+# Releases publish a SHA256SUMS asset. When one is available the download is
+# verified against it; when it is not (a branch install, or a release
+# predating the checksums file) it falls back to TLS alone, and says so
+# rather than implying an integrity check that did not happen.
+verify_checksum() {
+    local url="$1" local_path="$2"
+    local sums_url="${url%/*}/SHA256SUMS"
+    local filename="${url##*/}"
+
+    case "${url}" in
+        *"/releases/download/"*) ;;
+        *) log "Integrity: TLS only (installing from a branch, which has no published checksums)"; return 0 ;;
+    esac
+
+    if ! curl -fsSL --retry 2 -o "${WORKDIR}/SHA256SUMS" "${sums_url}" 2>/dev/null; then
+        warn "No SHA256SUMS published for this release; relying on TLS alone."
+        return 0
+    fi
+
+    local expected actual
+    expected="$(sed -n "s/^\([0-9a-f]\{64\}\)  *${filename}$/\1/p" "${WORKDIR}/SHA256SUMS" | head -1)"
+    if [ -z "${expected}" ]; then
+        warn "SHA256SUMS does not list ${filename}; relying on TLS alone."
+        return 0
+    fi
+
+    actual="$(shasum -a 256 "${local_path}" | awk '{print $1}')"
+    if [ "${expected}" != "${actual}" ]; then
+        die "Checksum mismatch for ${filename}.
+    expected: ${expected}
+    actual:   ${actual}
+    Refusing to install. This is worth reporting."
+    fi
+    log "Integrity: sha256 verified against SHA256SUMS"
+}
+
+# --------------------------------------------------------- release download
+
+# Sets STAGED and INSTALL_METHOD=release on success. Returns 1 (does not die)
+# when a signed release isn't available or wasn't asked for, so the caller
+# can fall back to building from source.
+fetch_release_dmg() {
+    [ -z "${TMUX_SWITCHER_BUILD:-}" ] || return 1
+    [ -z "${TMUX_SWITCHER_REF:-}" ] || return 1
+    [ -z "${TMUX_SWITCHER_URL:-}" ] || return 1
+
+    log "Looking for a published release of ${REPO}"
+    local tag
+    tag="${TMUX_SWITCHER_VERSION:-}"
+    if [ -z "${tag}" ]; then
+        tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+            | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1 || true)"
+    fi
+    [ -n "${tag}" ] || return 1
+
+    local version="${tag#v}"
+    # Matches the asset name produced by .github/workflows/release.yml.
+    local url="https://github.com/${REPO}/releases/download/${tag}/${APP_NAME}-${version}.dmg"
+
+    log "Downloading ${APP_NAME}-${version}.dmg (${tag})"
+    curl -fsSL --retry 3 -o "${WORKDIR}/release.dmg" "${url}" || return 1
+    verify_checksum "${url}" "${WORKDIR}/release.dmg"
+
+    local mount
+    mount="$(hdiutil attach -nobrowse -readonly "${WORKDIR}/release.dmg" \
+             | tail -1 | awk -F'\t' '{print $NF}')"
+    [ -n "${mount}" ] || die "Could not mount the downloaded disk image."
+
+    ditto "${mount}/${APP_NAME}.app" "${WORKDIR}/${APP_NAME}.app"
+    hdiutil detach "${mount}" -quiet || true
+
+    [ -d "${WORKDIR}/${APP_NAME}.app" ] || die "Disk image did not contain ${APP_NAME}.app."
+    STAGED="${WORKDIR}/${APP_NAME}.app"
+    INSTALL_METHOD="release"
+}
+
+install_staged_app() {
+    local target="${INSTALL_DIR}/${APP_NAME}.app"
+
+    if pgrep -f "${APP_NAME}.app/${EXEC_REL}" > /dev/null 2>&1; then
+        log "Stopping the running copy"
+        pkill -f "${APP_NAME}.app/${EXEC_REL}" || true
+        sleep 1
+    fi
+
+    log "Installing to ${INSTALL_DIR}"
+    rm -rf "${target}"
+    ditto "${STAGED}" "${target}"
+    xattr -dr com.apple.quarantine "${target}" 2>/dev/null || true
+
+    local lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+    [ -x "${lsregister}" ] && "${lsregister}" -f "${target}" > /dev/null 2>&1 || true
+}
+
 # ---------------------------------------------------------------- source
 
 # Prints "<url>|<strip-prefix>|<label>" for the source to install.
@@ -198,7 +291,7 @@ fetch_source() {
     Check the version exists, or set TMUX_SWITCHER_REF=main to build the latest source."
     fi
 
-    verify_checksum "$1"
+    verify_checksum "${url}" "${WORKDIR}/source.tar.gz"
 
     mkdir -p "${WORKDIR}/src"
     # --strip-components=1 drops the single top-level directory every GitHub
@@ -206,42 +299,6 @@ fetch_source() {
     tar xzf "${WORKDIR}/source.tar.gz" -C "${WORKDIR}/src" --strip-components=1
 
     [ -f "${WORKDIR}/src/Makefile" ] || die "The downloaded archive does not look like tmux-switcher (no Makefile inside)."
-}
-
-# Releases publish a SHA256SUMS asset. When one is available the tarball is
-# verified against it; when it is not (a branch install, or a release predating
-# the checksums file) the download falls back to TLS alone, and says so rather
-# than implying an integrity check that did not happen.
-verify_checksum() {
-    local url="$1"
-    local sums_url="${url%/*}/SHA256SUMS"
-    local filename="${url##*/}"
-
-    case "${url}" in
-        *"/releases/download/"*) ;;
-        *) log "Integrity: TLS only (installing from a branch, which has no published checksums)"; return 0 ;;
-    esac
-
-    if ! curl -fsSL --retry 2 -o "${WORKDIR}/SHA256SUMS" "${sums_url}" 2>/dev/null; then
-        warn "No SHA256SUMS published for this release; relying on TLS alone."
-        return 0
-    fi
-
-    local expected actual
-    expected="$(sed -n "s/^\([0-9a-f]\{64\}\)  *${filename}$/\1/p" "${WORKDIR}/SHA256SUMS" | head -1)"
-    if [ -z "${expected}" ]; then
-        warn "SHA256SUMS does not list ${filename}; relying on TLS alone."
-        return 0
-    fi
-
-    actual="$(shasum -a 256 "${WORKDIR}/source.tar.gz" | awk '{print $1}')"
-    if [ "${expected}" != "${actual}" ]; then
-        die "Checksum mismatch for ${filename}.
-    expected: ${expected}
-    actual:   ${actual}
-    Refusing to build. This is worth reporting."
-    fi
-    log "Integrity: sha256 verified against SHA256SUMS"
 }
 
 # ---------------------------------------------------------------- install
@@ -284,6 +341,27 @@ build_and_install() {
     if ! make "${make_args[@]}"; then
         die "Build or install failed. The output above has the details."
     fi
+    INSTALL_METHOD="source"
+}
+
+build_from_source() {
+    if [ -n "${TMUX_SWITCHER_BUILD:-}" ]; then
+        log "Building from source (TMUX_SWITCHER_BUILD is set)"
+    else
+        log "No signed release published — building from source"
+    fi
+
+    check_toolchain
+
+    local source url version label
+    source="$(resolve_source)"
+    url="${source%%|*}"
+    version="$(printf '%s' "${source}" | cut -d'|' -f2)"
+    label="${source##*|}"
+
+    fetch_source "${url}" "${label}"
+    ensure_identity
+    build_and_install "${version}"
 }
 
 verify_install() {
@@ -299,11 +377,18 @@ verify_install() {
         die "${app} ended up ad-hoc signed. Its Accessibility permission would be
     revoked on every update. This is a bug -- please report it."
     fi
-    if ! grep -q "Authority=${IDENTITY}" <<< "${signature}"; then
-        warn "Could not confirm the signing authority is '${IDENTITY}'. Check: codesign -dvvv ${app}"
-    fi
 
-    log "Verified: ${app} is signed with a stable, certificate-anchored identity"
+    if [ "${INSTALL_METHOD}" = "release" ]; then
+        if ! grep -q 'Authority=Developer ID Application' <<< "${signature}"; then
+            warn "Could not confirm the signing authority is a Developer ID certificate. Check: codesign -dvvv ${app}"
+        fi
+        log "Verified: ${app} is signed with a Developer ID, Apple-notarized identity"
+    else
+        if ! grep -q "Authority=${IDENTITY}" <<< "${signature}"; then
+            warn "Could not confirm the signing authority is '${IDENTITY}'. Check: codesign -dvvv ${app}"
+        fi
+        log "Verified: ${app} is signed with a stable, certificate-anchored identity"
+    fi
 }
 
 print_next_steps() {
@@ -348,22 +433,18 @@ main() {
     printf '\n%stmux-switcher installer%s\n\n' "${BOLD}" "${RESET}"
 
     check_platform
-    check_toolchain
     check_tmux
     resolve_install_dir
 
     WORKDIR="$(mktemp -d)"
     trap cleanup EXIT
 
-    local source url version label
-    source="$(resolve_source)"
-    url="${source%%|*}"
-    version="$(printf '%s' "${source}" | cut -d'|' -f2)"
-    label="${source##*|}"
+    if fetch_release_dmg; then
+        install_staged_app
+    else
+        build_from_source
+    fi
 
-    fetch_source "${url}" "${label}"
-    ensure_identity
-    build_and_install "${version}"
     verify_install
     print_next_steps
 }
