@@ -26,6 +26,16 @@
 #   NOTARY_ISSUER_ID     the Issuer ID from App Store Connect > Integrations
 #
 # Nothing else needs to change; the next tag picks them up automatically.
+#
+# A signed release also bumps the Homebrew tap (jekuari/homebrew-tap) so
+# `brew install jekuari/tap/tmux-switcher` stays current. That needs its own
+# secret, since GITHUB_TOKEN can't push to a different repo:
+#
+#   HOMEBREW_TAP_TOKEN   a fine-grained PAT scoped to jekuari/homebrew-tap
+#                        only, with Contents: read/write
+#
+# Without it, the release still publishes fine; the tap-update step just
+# fails and the cask is left stale until it's bumped by hand.
 
 name: Release
 
@@ -307,6 +317,37 @@ jobs:
             --generate-notes \
             --verify-tag \
             "${ASSETS[@]}"
+
+      # ---------------------------------------------------------- homebrew
+      - name: Check out Homebrew tap
+        if: steps.version.outputs.is_release == 'true' && steps.gate.outputs.signing == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: jekuari/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Bump cask version and sha256
+        if: steps.version.outputs.is_release == 'true' && steps.gate.outputs.signing == 'true'
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          CASK="homebrew-tap/Casks/tmux-switcher.rb"
+          SHA="$(shasum -a 256 "dist/TmuxSwitcher-$VERSION.dmg" | awk '{print $1}')"
+
+          sed -i '' "s/^  version \".*\"/  version \"$VERSION\"/" "$CASK"
+          sed -i '' "s/^  sha256 \".*\"/  sha256 \"$SHA\"/" "$CASK"
+
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "Cask already up to date; nothing to push."
+          else
+            git add Casks/tmux-switcher.rb
+            git commit -m "tmux-switcher $VERSION"
+            git push origin HEAD:main
+          fi
 
       - name: Upload dry-run artifacts
         if: steps.version.outputs.is_release != 'true'
